@@ -84,7 +84,7 @@ const searchYouTube = async (query) => {
 
 const AdminDashboard = () => {
     // State
-    const [query, setQuery] = useState('');
+    const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState([]);
     const [selectedVideo, setSelectedVideo] = useState(null);
 
@@ -198,9 +198,9 @@ const AdminDashboard = () => {
     }, [topics, selectedTopic]);
 
     const handleSearch = async () => {
-        if (!query) return;
+        if (!searchQuery) return;
         setSearchResults([]);
-        const results = await searchYouTube(query);
+        const results = await searchYouTube(searchQuery);
         setSearchResults(results);
         setSelectedVideo(null);
     };
@@ -364,8 +364,8 @@ const AdminDashboard = () => {
                                 <input
                                     type="text"
                                     placeholder="Buscar videos técnicos para convertir a Audiolibro..."
-                                    value={query}
-                                    onChange={(e) => setQuery(e.target.value)}
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
                                     onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
                                     style={{ flex: 1, padding: '0.6rem 1rem', borderRadius: '8px', border: '1px solid var(--border-subtle)', outline: 'none' }}
                                 />
