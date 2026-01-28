@@ -181,12 +181,13 @@ const AdminDashboard = () => {
         }
     };
 
-    // Auto-select first topic if none selected when modal opens
+    // Auto-select first topic IF none selected and topics exist
     useEffect(() => {
-        if (selectedVideo && (selectedTopic === '' || selectedTopic === null) && topics.length > 0) {
+        if (topics.length > 0 && (!selectedTopic || selectedTopic === '')) {
+            console.log("🎯 Auto-seleccionando primera categoría:", topics[0].name);
             setSelectedTopic(topics[0].id);
         }
-    }, [selectedVideo, topics, selectedTopic]);
+    }, [topics, selectedTopic]);
 
     const handleSearch = async () => {
         if (!query) return;
@@ -197,6 +198,18 @@ const AdminDashboard = () => {
     };
 
     const handleAccept = async (video, topicId, subtheme, levelOverride, summary, transcription, audioLen, recommended, favorite, visible) => {
+        console.log("🚀 Iniciando proceso de Publicación...");
+
+        if (!topicId) {
+            alert("⚠️ Por favor, selecciona una Categoría antes de publicar.");
+            return;
+        }
+
+        if (!summary || summary.length < 10) {
+            alert("⚠️ El libro necesita un Resumen. Pulsa 'Extraer Contenido' antes de publicar.");
+            return;
+        }
+
         const newVideo = {
             ...video,
             topicId,
@@ -596,11 +609,11 @@ const AdminDashboard = () => {
                                         <button onClick={() => { setSelectedVideo(null); resetProcessing(); }} className="btn btn-outline" style={{ flex: 1 }}>Cerrar</button>
                                         <button
                                             onClick={() => {
+                                                console.log("Click en Publicar. TopicID:", selectedTopic);
                                                 handleAccept(selectedVideo, selectedTopic, 'General', selectedLevel, aiSummary, rawTranscription, audioLength, isRecommended, isFavorite, isVisible);
                                             }}
-                                            disabled={!aiSummary}
                                             className="btn btn-primary"
-                                            style={{ flex: 2 }}
+                                            style={{ flex: 2, background: !aiSummary ? '#94a3b8' : 'var(--accent-primary)' }}
                                         > {editingVideoIdx >= 0 ? 'Guardar Cambios' : 'Publicar'} </button>
                                     </div>
                                 </div>
