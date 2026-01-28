@@ -105,6 +105,7 @@ const AdminDashboard = () => {
     const [selectedTopic, setSelectedTopic] = useState('');
     const [selectedLevel, setSelectedLevel] = useState('Iniciación');
     const [isVisible, setIsVisible] = useState(true);
+    const [isPublishing, setIsPublishing] = useState(false);
 
     // Persistent State (Now using local as fallback, but targeting Firestore)
     const [acceptedVideos, setAcceptedVideos] = useState([]);
@@ -165,19 +166,26 @@ const AdminDashboard = () => {
     }, []);
 
     const saveToCloud = async (video) => {
+        setIsPublishing(true);
         try {
             console.log("☁️ Intentando guardar en Firebase:", video);
             const videoId = String(video.id);
             if (!videoId || videoId === 'undefined') {
                 throw new Error("ID de video no válido");
             }
-            await setDoc(doc(db, "books", videoId), video);
+
+            // Clean object for Firestore (remove undefined and ensure serializable)
+            const cleanVideo = JSON.parse(JSON.stringify(video));
+
+            await setDoc(doc(db, "books", videoId), cleanVideo);
             console.log("✅ Guardado correctamente en Firestore");
             return true;
         } catch (err) {
             console.error("❌ Error al guardar en Firestore:", err);
-            alert("Error al guardar en la nube: " + err.message);
+            alert("⚠️ Error al publicar: " + err.message);
             return false;
+        } finally {
+            setIsPublishing(false);
         }
     };
 
@@ -609,12 +617,19 @@ const AdminDashboard = () => {
                                         <button onClick={() => { setSelectedVideo(null); resetProcessing(); }} className="btn btn-outline" style={{ flex: 1 }}>Cerrar</button>
                                         <button
                                             onClick={() => {
+                                                if (isPublishing) return;
                                                 console.log("Click en Publicar. TopicID:", selectedTopic);
                                                 handleAccept(selectedVideo, selectedTopic, 'General', selectedLevel, aiSummary, rawTranscription, audioLength, isRecommended, isFavorite, isVisible);
                                             }}
                                             className="btn btn-primary"
-                                            style={{ flex: 2, background: !aiSummary ? '#94a3b8' : 'var(--accent-primary)' }}
-                                        > {editingVideoIdx >= 0 ? 'Guardar Cambios' : 'Publicar'} </button>
+                                            style={{
+                                                flex: 2,
+                                                background: isPublishing ? '#64748b' : (!aiSummary ? '#94a3b8' : 'var(--accent-primary)'),
+                                                cursor: isPublishing ? 'not-allowed' : 'pointer'
+                                            }}
+                                        >
+                                            {isPublishing ? '⚡ Publicando...' : (editingVideoIdx >= 0 ? 'Guardar Cambios' : 'Publicar')}
+                                        </button>
                                     </div>
                                 </div>
                             </div>
