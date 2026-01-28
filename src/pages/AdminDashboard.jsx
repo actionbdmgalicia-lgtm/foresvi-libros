@@ -166,11 +166,18 @@ const AdminDashboard = () => {
 
     const saveToCloud = async (video) => {
         try {
-            console.log("☁️ Guardando en Firebase...");
+            console.log("☁️ Intentando guardar en Firebase:", video);
             const videoId = String(video.id);
+            if (!videoId || videoId === 'undefined') {
+                throw new Error("ID de video no válido");
+            }
             await setDoc(doc(db, "books", videoId), video);
+            console.log("✅ Guardado correctamente en Firestore");
+            return true;
         } catch (err) {
-            console.error("Error saving to Firestore:", err);
+            console.error("❌ Error al guardar en Firestore:", err);
+            alert("Error al guardar en la nube: " + err.message);
+            return false;
         }
     };
 
@@ -206,11 +213,14 @@ const AdminDashboard = () => {
             validatedBy: 'Experto FORESVI'
         };
 
-        await saveToCloud(newVideo);
-        setSelectedVideo(null);
-        setEditingVideoIdx(-1);
-        resetProcessing();
-        setActiveTab('database');
+        const success = await saveToCloud(newVideo);
+        if (success) {
+            alert("🎉 ¡Libro publicado con éxito!");
+            setSelectedVideo(null);
+            setEditingVideoIdx(-1);
+            resetProcessing();
+            setActiveTab('database');
+        }
     };
 
     const handleEdit = (video, index) => {
@@ -408,7 +418,16 @@ const AdminDashboard = () => {
                                             <td style={{ padding: '0.75rem' }}>
                                                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                                                     <button onClick={() => handleEdit(video, idx)} style={{ background: 'none', border: 'none', color: 'var(--accent-primary)', cursor: 'pointer' }}>✏️</button>
-                                                    <button onClick={() => setAcceptedVideos(acceptedVideos.filter(v => v.id !== video.id))} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer' }}>🗑️</button>
+                                                    <button onClick={async () => {
+                                                        if (window.confirm('¿Estás seguro de que quieres eliminar este audiolibro?')) {
+                                                            try {
+                                                                await deleteDoc(doc(db, "books", video.id));
+                                                                alert("Libro eliminado.");
+                                                            } catch (err) {
+                                                                alert("Error al eliminar: " + err.message);
+                                                            }
+                                                        }
+                                                    }} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer' }}>🗑️</button>
                                                 </div>
                                             </td>
                                         </tr>
