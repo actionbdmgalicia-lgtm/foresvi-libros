@@ -25,7 +25,8 @@ const Navbar = () => {
                 <Link to="/" style={{ display: 'flex', alignItems: 'center' }}>
                     <img src="/logo.png" alt="FORESVI Logo" style={{ height: '40px', width: 'auto' }} />
                 </Link>
-                <div style={{ display: 'flex', gap: '2rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '2rem' }}>
+                    <div style={{ fontSize: '0.6rem', color: '#94a3b8', opacity: 0.5 }}>v1.0.7</div>
                     <Link to="/" style={{ color: 'var(--text-primary)' }}>Inicio</Link>
                     <a
                         href="#library"

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+// Version: 1.0.7 - Build: 2026-01-28 21:08 - Fixed: URL Extraction & Silent Stop
 import { db } from '../firebase';
 import { collection, addDoc, getDocs, doc, setDoc, deleteDoc, query, orderBy, onSnapshot } from 'firebase/firestore';
 
@@ -12,7 +13,7 @@ const callOpenAI = async (prompt) => {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${OPENAI_API_KEY}`
+                'Authorization': `Bearer ${OPENAI_API_KEY} `
             },
             body: JSON.stringify({
                 model: "gpt-4o-mini",
@@ -32,7 +33,8 @@ const extractVideoId = (query) => {
     if (!query) return null;
     query = query.trim();
     if (/^[A-Za-z0-9_-]{11}$/.test(query)) return query;
-    const regExp = /^.*(?:youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]{11})/;
+    // Robust regex for all YT formats
+    const regExp = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
     const match = query.match(regExp);
     return (match && match[1].length === 11) ? match[1] : null;
 };
@@ -46,8 +48,11 @@ const searchYouTube = async (query, filters = {}) => {
 
     try {
         const videoId = extractVideoId(query);
+        console.log("📺 YouTube ID detectado:", videoId);
+
         let url;
         if (videoId) {
+            console.log("🎯 Buscando video directo id:", videoId);
             url = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${videoId}&key=${YOUTUBE_API_KEY}`;
         } else {
             // General Search with filters
@@ -391,7 +396,7 @@ const AdminDashboard = () => {
         <div style={{ paddingTop: '60px', minHeight: '100vh', background: 'var(--bg-secondary)' }}>
             <div className="container" style={{ maxWidth: '1400px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', padding: '1rem 0' }}>
-                    <h2 style={{ margin: 0, fontSize: '1.8rem' }}>Panel de Expertos 🛡️</h2>
+                    <h2 style={{ margin: 0, fontSize: '1.8rem' }}>Panel de Expertos <span style={{ fontSize: '0.8rem', opacity: 0.5 }}>v1.0.7</span> 🛡️</h2>
                     <div style={{ display: 'flex', gap: '0.5rem', background: 'white', padding: '4px', borderRadius: '12px', border: '1px solid var(--border-subtle)' }}>
                         <button onClick={() => setActiveTab('search')} className={`btn ${activeTab === 'search' ? 'btn-primary' : ''}`} style={{ border: 'none', background: activeTab === 'search' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'search' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>🔍 Buscar</button>
                         <button onClick={() => setActiveTab('database')} className={`btn ${activeTab === 'database' ? 'btn-primary' : ''}`} style={{ border: 'none', background: activeTab === 'database' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'database' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>📚 Biblioteca</button>

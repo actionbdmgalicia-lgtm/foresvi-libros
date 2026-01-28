@@ -82,6 +82,21 @@ const BookDetail = () => {
         duration: 300
     });
 
+    // Cleanup on unmount
+    useEffect(() => {
+        return () => {
+            synth.cancel();
+            setMediaState(prev => ({ ...prev, isPlaying: false }));
+        };
+    }, []);
+
+    // Stop background audio when entering video tab
+    useEffect(() => {
+        if (activeTab === 'video' && mediaState.isPlaying) {
+            setMediaState(prev => ({ ...prev, isPlaying: false }));
+        }
+    }, [activeTab]);
+
     // Speed Sync for TTS
     const [ttsProgress, setTtsProgress] = useState(0);
 
@@ -328,7 +343,7 @@ const BookDetail = () => {
                         <ReactPlayer
                             ref={playerRef}
                             url={`https://www.youtube.com/watch?v=${book.id}`}
-                            playing={mediaState.isPlaying}
+                            playing={mediaState.isPlaying && activeTab !== 'video'}
                             playbackRate={playbackSpeed}
                             onProgress={(state) => {
                                 setMediaState(prev => ({ ...prev, currentTime: Math.floor(state.playedSeconds) }));
