@@ -113,29 +113,50 @@ const AdminDashboard = () => {
 
     // 1. CLOUD SYNC LOGIC (Firestore)
     useEffect(() => {
+        if (!db) {
+            console.error("❌ Firebase Database not initialized correctly.");
+            return;
+        }
+
         console.log("📥 Iniciando sincronización en tiempo real con Firestore...");
 
         // Listen to Books
-        const qBooks = query(collection(db, "books"), orderBy("acceptedDate", "desc"));
-        const unsubscribeBooks = onSnapshot(qBooks, (snapshot) => {
-            const books = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
-            setAcceptedVideos(books);
-        });
+        let unsubscribeBooks = () => { };
+        try {
+            const qBooks = query(collection(db, "books"), orderBy("acceptedDate", "desc"));
+            unsubscribeBooks = onSnapshot(qBooks,
+                (snapshot) => {
+                    const books = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                    setAcceptedVideos(books);
+                },
+                (err) => console.error("Firestore Books Error:", err)
+            );
+        } catch (err) {
+            console.error("Error setting up books listener:", err);
+        }
 
         // Listen to Topics
-        const unsubscribeTopics = onSnapshot(collection(db, "topics"), (snapshot) => {
-            if (snapshot.empty) {
-                // Initialize default topics if cloud is empty
-                const defaultTopics = [
-                    { name: 'Energía Solar', subthemes: ['Instalación', 'Mantenimiento', 'Normativa'] },
-                    { name: 'Electricidad Industrial', subthemes: ['Circuitos', 'Protecciones', 'Motores'] },
-                    { name: 'Seguridad', subthemes: ['EPIs', 'Trabajos en Altura', 'Riesgo Eléctrico'] }
-                ];
-                defaultTopics.forEach(t => addDoc(collection(db, "topics"), t));
-            } else {
-                setTopics(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id })));
-            }
-        });
+        let unsubscribeTopics = () => { };
+        try {
+            unsubscribeTopics = onSnapshot(collection(db, "topics"),
+                (snapshot) => {
+                    if (snapshot.empty) {
+                        const defaultTopics = [
+                            { name: 'Energía Solar', subthemes: ['Instalación', 'Mantenimiento', 'Normativa'] },
+                            { name: 'Electricidad Industrial', subthemes: ['Circuitos', 'Protecciones', 'Motores'] },
+                            { name: 'Seguridad', subthemes: ['EPIs', 'Trabajos en Altura', 'Riesgo Eléctrico'] }
+                        ];
+                        defaultTopics.forEach(t => addDoc(collection(db, "topics"), t));
+                    } else {
+                        const fetchedTopics = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                        setTopics(fetchedTopics);
+                    }
+                },
+                (err) => console.error("Firestore Topics Error:", err)
+            );
+        } catch (err) {
+            console.error("Error setting up topics listener:", err);
+        }
 
         return () => {
             unsubscribeBooks();
@@ -281,12 +302,15 @@ const AdminDashboard = () => {
     };
 
     const calculateStars = (views) => {
-        if (views > 100000) return 5;
-        if (views > 50000) return 4;
-        if (views > 10000) return 3;
-        if (views > 1000) return 2;
+        const v = parseInt(views) || 0;
+        if (v > 100000) return 5;
+        if (v > 50000) return 4;
+        if (v > 10000) return 3;
+        if (v > 1000) return 2;
         return 1;
     };
+
+    if (!db) return <div style={{ padding: '100px', textAlign: 'center' }}>⚠️ Error: Firebase no se pudo inicializar. Revisa tus variables de entorno y reinicia el servidor.</div>;
 
     return (
         <div style={{ paddingTop: '60px', minHeight: '100vh', background: 'var(--bg-secondary)' }}>
@@ -328,7 +352,7 @@ const AdminDashboard = () => {
                                                 👁️ {video.views > 1000 ? (video.views / 1000).toFixed(1) + 'k' : video.views} | 🎙️ {Math.floor(video.durationSec / 60)}m
                                             </div>
                                             <div style={{ position: 'absolute', top: '8px', right: '8px', background: 'white', padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem', color: '#fbbf24', fontWeight: 'bold' }}>
-                                                {"⭐".repeat(stars)}
+                                                {"⭐".repeat(Math.min(5, Math.max(1, stars)))}
                                             </div>
                                             <button onClick={() => { setSelectedVideo(video); setSelectedTopic(topics[0]?.id || ''); }} style={{ position: 'absolute', bottom: '8px', right: '8px', width: '30px', height: '30px', borderRadius: '50%', background: 'var(--accent-primary)', color: 'white', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
                                         </div>
