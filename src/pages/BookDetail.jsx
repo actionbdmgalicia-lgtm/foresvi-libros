@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { db } from '../firebase';
 import { doc, getDoc } from 'firebase/firestore';
+import ReactPlayer from 'react-player/youtube';
 
 const BookDetail = () => {
     const { id } = useParams();
@@ -23,6 +24,7 @@ const BookDetail = () => {
         iframeSrc: ''
     });
     const audioInterval = useRef(null);
+    const playerRef = useRef(null);
 
     // TTS State
     const [ttsState, setTtsState] = useState({
@@ -167,10 +169,12 @@ const BookDetail = () => {
     };
 
     const handleSeek = (newTime) => {
+        if (playerRef.current) {
+            playerRef.current.seekTo(newTime, 'seconds');
+        }
         setMediaState(prev => ({
             ...prev,
-            currentTime: newTime,
-            iframeSrc: `https://www.youtube.com/embed/${book?.id}?autoplay=1&start=${newTime}&rel=0&modestbranding=1&controls=0&showinfo=0`
+            currentTime: newTime
         }));
         if (!mediaState.isPlaying) {
             setMediaState(prev => ({ ...prev, isPlaying: true }));
@@ -210,25 +214,30 @@ const BookDetail = () => {
     const currentParagraph = paragraphs[page] || "";
 
     const SpeedSelector = () => (
-        <div style={{ display: 'flex', gap: '0.3rem', justifyContent: 'center', marginBottom: '1.5rem', background: '#f1f5f9', padding: '0.3rem', borderRadius: '50px', width: 'fit-content', margin: '0 auto 1.5rem auto' }}>
-            {[0.75, 0.9, 1, 1.25, 1.5, 2].map(speed => (
-                <button
-                    key={speed}
-                    onClick={() => setPlaybackSpeed(speed)}
-                    style={{
-                        padding: '0.3rem 0.6rem',
-                        fontSize: '0.75rem',
-                        borderRadius: '50px',
-                        border: 'none',
-                        background: playbackSpeed === speed ? 'var(--accent-primary)' : 'transparent',
-                        color: playbackSpeed === speed ? 'white' : '#64748b',
-                        cursor: 'pointer',
-                        fontWeight: '600'
-                    }}
-                >
-                    x{speed}
-                </button>
-            ))}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem', marginBottom: '1.5rem', background: '#f8fafc', padding: '1rem', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', fontSize: '0.75rem', color: '#64748b', fontWeight: 'bold' }}>
+                <span>Lento</span>
+                <span style={{ color: 'var(--accent-primary)', fontSize: '1rem' }}>x{playbackSpeed.toFixed(2)}</span>
+                <span>Rápido</span>
+            </div>
+            <input
+                type="range"
+                min="0.5"
+                max="3"
+                step="0.1"
+                value={playbackSpeed}
+                onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))}
+                style={{ width: '100%', accentColor: 'var(--accent-primary)', cursor: 'pointer' }}
+            />
+            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                {[0.75, 0.9, 1, 1.25, 1.5, 2].map(val => (
+                    <button
+                        key={val}
+                        onClick={() => setPlaybackSpeed(val)}
+                        style={{ padding: '2px 8px', fontSize: '0.7rem', border: '1px solid #e2e8f0', borderRadius: '4px', background: playbackSpeed === val ? '#e0f2fe' : 'white', cursor: 'pointer' }}
+                    >x{val}</button>
+                ))}
+            </div>
         </div>
     );
 
@@ -314,11 +323,7 @@ const BookDetail = () => {
                             <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem', alignItems: 'center', marginBottom: '2rem' }}>
                                 <button onClick={() => handleSeek(Math.max(0, mediaState.currentTime - 15))} className="btn btn-outline" style={{ borderRadius: '50%', width: '40px', height: '40px', padding: 0 }}>-15</button>
                                 <button
-                                    onClick={() => setMediaState(s => {
-                                        // Initialize iframe src on first play if empty
-                                        const newSrc = (!s.isPlaying && !s.iframeSrc) ? `https://www.youtube.com/embed/${book.id}?autoplay=1&start=${s.currentTime}&rel=0&modestbranding=1&controls=0&showinfo=0` : s.iframeSrc;
-                                        return { ...s, isPlaying: !s.isPlaying, iframeSrc: newSrc };
-                                    })}
+                                    onClick={() => setMediaState(s => ({ ...s, isPlaying: !s.isPlaying }))}
                                     className="btn btn-primary"
                                     style={{ borderRadius: '50%', width: '60px', height: '60px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.5rem' }}
                                 >
@@ -335,18 +340,22 @@ const BookDetail = () => {
                                 ⬇️ Descargar Audio para modo Offline
                             </button>
 
-                            {/* Hidden Iframe */}
-                            <div style={{ height: 0, overflow: 'hidden', opacity: 0 }}>
-                                {mediaState.isPlaying && (
-                                    <iframe
-                                        width="1" height="1"
-                                        src={mediaState.iframeSrc || `https://www.youtube.com/embed/${book.id}?autoplay=1&start=${mediaState.currentTime}&rel=0&modestbranding=1&controls=0&showinfo=0`}
-                                        allow="autoplay"
-                                    ></iframe>
-                                )}
-                            </div>
                         </div>
                     )}
+
+                    {/* PERSISTENT BACKGROUND AUDIO PLAYER (Hidden) */}
+                    <div style={{ display: 'none' }}>
+                        <ReactPlayer
+                            ref={playerRef}
+                            url={`https://www.youtube.com/watch?v=${book.id}`}
+                            playing={mediaState.isPlaying}
+                            playbackRate={playbackSpeed}
+                            onProgress={(state) => {
+                                setMediaState(prev => ({ ...prev, currentTime: Math.floor(state.playedSeconds) }));
+                            }}
+                            onDuration={(d) => setMediaState(prev => ({ ...prev, duration: d }))}
+                        />
+                    </div>
 
                     {/* TEXT READER */}
                     {activeTab === 'texto' && (
@@ -384,12 +393,14 @@ const BookDetail = () => {
                     {/* VIDEO PLAYER */}
                     {activeTab === 'video' && (
                         <div style={{ aspectRatio: '16/9', background: 'black', borderRadius: '12px', overflow: 'hidden' }}>
-                            <iframe
-                                width="100%" height="100%"
-                                src={`https://www.youtube.com/embed/${book.id}?autoplay=0&rel=0&modestbranding=1`}
-                                frameBorder="0"
-                                allowFullScreen
-                            ></iframe>
+                            <ReactPlayer
+                                url={`https://www.youtube.com/watch?v=${book.id}`}
+                                width="100%"
+                                height="100%"
+                                controls
+                                playbackRate={playbackSpeed}
+                                playing={false}
+                            />
                         </div>
                     )}
 

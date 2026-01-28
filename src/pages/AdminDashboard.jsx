@@ -29,46 +29,79 @@ const callOpenAI = async (prompt) => {
 };
 
 // Real YouTube Search Service
-const searchYouTube = async (query) => {
+const searchYouTube = async (query, filters = {}) => {
     if (YOUTUBE_API_KEY === 'TU_CLAVE_API_AQUI') {
-        alert("⚠️ Falta la API Key de YouTube. Edita el archivo AdminDashboard.jsx y coloca tu clave.");
+        alert("⚠️ Falta la API Key de YouTube.");
         return [];
     }
 
     try {
-        const response = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=12&q=${query}&type=video&order=viewCount&key=${YOUTUBE_API_KEY}`);
-        const data = await response.json();
+        let videoId = null;
+        // Detect direct URL or ID
+        const urlMatch = query.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/);
+        if (urlMatch) videoId = urlMatch[1];
 
-        if (data.error) {
-            console.error("YouTube API Error:", data.error);
-            alert(`Error de YouTube: ${data.error.message}`);
-            return [];
+        let url;
+        if (videoId) {
+            // If it's a direct ID, fetch that specific video
+            url = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${videoId}&key=${YOUTUBE_API_KEY}`;
+        } else {
+            // General Search with filters
+            let filterParams = '';
+            if (filters.year) {
+                const startOfYear = `${filters.year}-01-01T00:00:00Z`;
+                filterParams += `&publishedAfter=${startOfYear}`;
+            }
+            if (filters.duration && filters.duration !== 'any') {
+                filterParams += `&videoDuration=${filters.duration}`;
+            }
+            if (filters.lang && filters.lang !== 'any') {
+                filterParams += `&relevanceLanguage=${filters.lang}`;
+            }
+
+            url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=12&q=${query}&type=video&order=relevance${filterParams}&key=${YOUTUBE_API_KEY}`;
         }
 
-        const videoIds = data.items.map(item => item.id.videoId).join(',');
-        const statsResponse = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=statistics,contentDetails&id=${videoIds}&key=${YOUTUBE_API_KEY}`);
-        const statsData = await statsResponse.json();
+        const response = await fetch(url);
+        const data = await response.json();
 
-        return data.items.map((item, index) => {
-            const stats = statsData.items.find(s => s.id === item.id.videoId);
-            const viewCount = stats ? parseInt(stats.statistics.viewCount) : 0;
-            const durationISO = stats ? stats.contentDetails.duration : 'PT0M0S';
+        if (data.error) throw new Error(data.error.message);
 
-            // Basic ISO 8601 duration parser for simulation
+        let items = data.items;
+        if (!videoId) {
+            // For search, we need to fetch stats separately
+            const ids = items.map(item => item.id.videoId).join(',');
+            const statsRes = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=statistics,contentDetails&id=${ids}&key=${YOUTUBE_API_KEY}`);
+            const statsData = await statsRes.json();
+            items = items.map(item => ({
+                ...item,
+                id: item.id.videoId, // Normalize ID
+                contentDetails: statsData.items.find(s => s.id === item.id.videoId)?.contentDetails,
+                statistics: statsData.items.find(s => s.id === item.id.videoId)?.statistics
+            }));
+        } else {
+            // For direct ID, it's already in the top level
+            items = items.map(item => ({
+                ...item,
+                statistics: item.statistics,
+                contentDetails: item.contentDetails
+            }));
+        }
+
+        return items.map(item => {
+            const durationISO = item.contentDetails?.duration || 'PT0M0S';
             const match = durationISO.match(/PT(\d+H)?(\d+M)?(\d+S)?/);
             const h = parseInt(match[1]) || 0;
             const m = parseInt(match[2]) || 0;
             const s = parseInt(match[3]) || 0;
-            const totalSeconds = h * 3600 + m * 60 + s;
 
             return {
-                id: item.id.videoId,
+                id: item.id,
                 platform: 'YouTube',
-                url: `https://www.youtube.com/watch?v=${item.id.videoId}`,
+                url: `https://www.youtube.com/watch?v=${item.id}`,
                 title: item.snippet.title,
-                views: viewCount,
-                durationSec: totalSeconds,
-                comments: stats ? parseInt(stats.statistics.commentCount || 0) : 0,
+                views: parseInt(item.statistics?.viewCount || 0),
+                durationSec: h * 3600 + m * 60 + s,
                 thumbnail: item.snippet.thumbnails.high.url,
                 description: item.snippet.description,
                 channelTitle: item.snippet.channelTitle
@@ -76,8 +109,8 @@ const searchYouTube = async (query) => {
         });
 
     } catch (error) {
-        console.error("Error fetching YouTube data:", error);
-        alert("Error de conexión con YouTube.");
+        console.error("Error searchYouTube:", error);
+        alert("Error de YouTube: " + error.message);
         return [];
     }
 };
@@ -87,6 +120,7 @@ const AdminDashboard = () => {
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState([]);
     const [selectedVideo, setSelectedVideo] = useState(null);
+    const [searchFilters, setSearchFilters] = useState({ year: '', duration: 'any', lang: 'es' });
 
     // UI State
     const [activeTab, setActiveTab] = useState('search');
@@ -200,7 +234,7 @@ const AdminDashboard = () => {
     const handleSearch = async () => {
         if (!searchQuery) return;
         setSearchResults([]);
-        const results = await searchYouTube(searchQuery);
+        const results = await searchYouTube(searchQuery, searchFilters);
         setSearchResults(results);
         setSelectedVideo(null);
     };
@@ -299,9 +333,14 @@ const AdminDashboard = () => {
     // AI Processing Functions (Real OpenAI Integration)
     const generateTranscription = async () => {
         setIsProcessing(true);
-        const prompt = `Genera una transcripción técnica COMPLETA y EXHAUSTIVA para el video titulado "${selectedVideo.title}". 
-        Descripción original: ${selectedVideo.description}. 
-        IMPORTANTE: No resumas. Necesito el contenido íntegro en formato de texto fluido y profesional. No incluyas números de segundos ni marcas de tiempo. Hazlo en un lenguaje técnico perfecto para profesionales de FORESVI.`;
+        const prompt = `Actúa como un instructor técnico experto de FORESVI. Basándote en el contenido del video "${selectedVideo.title}" y su descripción técnica (${selectedVideo.description}), reconstruye una LECCIÓN MAESTRA COMPLETA y EXHAUSTIVA.
+        
+        OBJETIVO: El lector debe poder aprender todo el procedimiento técnico sin necesidad de ver el video original.
+        REGLAS:
+        - No menciones que eres una IA.
+        - No digas que no puedes proporcionar el contenido. Redacta la lección técnica paso a paso.
+        - Usa un lenguaje profesional y directo.
+        - El texto debe ser largo y detallado.`;
 
         const result = await callOpenAI(prompt);
         if (result) setRawTranscription(result);
@@ -360,16 +399,47 @@ const AdminDashboard = () => {
                 {activeTab === 'search' && (
                     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: '1rem' }}>
                         <div className="card" style={{ padding: '0.75rem', marginBottom: '1rem' }}>
-                            <div style={{ display: 'flex', gap: '0.5rem' }}>
+                            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
                                 <input
                                     type="text"
-                                    placeholder="Buscar videos técnicos para convertir a Audiolibro..."
+                                    placeholder="Pega un enlace de YouTube o busca temas técnicos..."
                                     value={searchQuery}
                                     onChange={(e) => setSearchQuery(e.target.value)}
                                     onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
                                     style={{ flex: 1, padding: '0.6rem 1rem', borderRadius: '8px', border: '1px solid var(--border-subtle)', outline: 'none' }}
                                 />
                                 <button onClick={handleSearch} className="btn btn-primary" style={{ padding: '0.6rem 1.5rem' }}>Buscar</button>
+                            </div>
+
+                            {/* NEW FILTERS */}
+                            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <label style={{ fontSize: '0.75rem', fontWeight: 'bold' }}>Año:</label>
+                                    <select value={searchFilters.year} onChange={e => setSearchFilters({ ...searchFilters, year: e.target.value })} style={{ padding: '4px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.75rem' }}>
+                                        <option value="">Cualquiera</option>
+                                        <option value="2025">2025</option>
+                                        <option value="2024">2024</option>
+                                        <option value="2023">2023</option>
+                                        <option value="2022">2022</option>
+                                    </select>
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <label style={{ fontSize: '0.75rem', fontWeight: 'bold' }}>Duración:</label>
+                                    <select value={searchFilters.duration} onChange={e => setSearchFilters({ ...searchFilters, duration: e.target.value })} style={{ padding: '4px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.75rem' }}>
+                                        <option value="any">Cualquiera</option>
+                                        <option value="short">Corto (&lt; 4m)</option>
+                                        <option value="medium">Medio (4-20m)</option>
+                                        <option value="long">Largo (&gt; 20m)</option>
+                                    </select>
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <label style={{ fontSize: '0.75rem', fontWeight: 'bold' }}>Idioma:</label>
+                                    <select value={searchFilters.lang} onChange={e => setSearchFilters({ ...searchFilters, lang: e.target.value })} style={{ padding: '4px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.75rem' }}>
+                                        <option value="any">Cualquiera</option>
+                                        <option value="es">Español</option>
+                                        <option value="en">Inglés</option>
+                                    </select>
+                                </div>
                             </div>
                         </div>
 
