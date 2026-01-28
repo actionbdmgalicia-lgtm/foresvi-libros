@@ -28,6 +28,14 @@ const callOpenAI = async (prompt) => {
     }
 };
 
+const extractVideoId = (query) => {
+    if (!query) return null;
+    if (/^[A-Za-z0-9_-]{11}$/.test(query)) return query;
+    const regExp = /^.*(youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]{11}).*/;
+    const match = query.match(regExp);
+    return (match && match[2].length === 11) ? match[2] : null;
+};
+
 // Real YouTube Search Service
 const searchYouTube = async (query, filters = {}) => {
     if (YOUTUBE_API_KEY === 'TU_CLAVE_API_AQUI') {
@@ -36,21 +44,15 @@ const searchYouTube = async (query, filters = {}) => {
     }
 
     try {
-        let videoId = null;
-        // Detect direct URL or ID
-        const urlMatch = query.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/);
-        if (urlMatch) videoId = urlMatch[1];
-
+        const videoId = extractVideoId(query);
         let url;
         if (videoId) {
-            // If it's a direct ID, fetch that specific video
             url = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${videoId}&key=${YOUTUBE_API_KEY}`;
         } else {
             // General Search with filters
             let filterParams = '';
             if (filters.year) {
-                const startOfYear = `${filters.year}-01-01T00:00:00Z`;
-                filterParams += `&publishedAfter=${startOfYear}`;
+                filterParams += `&publishedAfter=${filters.year}-01-01T00:00:00Z`;
             }
             if (filters.duration && filters.duration !== 'any') {
                 filterParams += `&videoDuration=${filters.duration}`;

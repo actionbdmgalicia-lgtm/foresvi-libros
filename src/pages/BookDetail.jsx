@@ -17,13 +17,6 @@ const BookDetail = () => {
     const [activeTab, setActiveTab] = useState('audio'); // 'audio', 'texto', 'video', 'tts'
 
     // Audio Player State
-    const [mediaState, setMediaState] = useState({
-        isPlaying: false,
-        currentTime: 0,
-        duration: 300, // Default 5 mins
-        iframeSrc: ''
-    });
-    const audioInterval = useRef(null);
     const playerRef = useRef(null);
 
     // TTS State
@@ -81,28 +74,16 @@ const BookDetail = () => {
         if (id) fetchBook();
     }, [id]);
 
-    // 2. AUDIO LOGIC (Decoupled Timer)
-    // Speed State
+    // 2. AUDIO LOGIC (Sync with ReactPlayer)
     const [playbackSpeed, setPlaybackSpeed] = useState(1);
+    const [mediaState, setMediaState] = useState({
+        isPlaying: false,
+        currentTime: 0,
+        duration: 300, // Default 5 mins
+        iframeSrc: ''
+    });
 
-    useEffect(() => {
-        if (mediaState.isPlaying) {
-            // Adjust interval based on speed: slower speed = longer interval, faster = shorter
-            const intervalMs = 1000 / playbackSpeed;
-            audioInterval.current = setInterval(() => {
-                setMediaState(prev => {
-                    if (prev.currentTime >= prev.duration) {
-                        return { ...prev, isPlaying: false, currentTime: prev.duration };
-                    }
-                    return { ...prev, currentTime: prev.currentTime + 1 };
-                });
-            }, intervalMs);
-        } else {
-            clearInterval(audioInterval.current);
-        }
-        return () => clearInterval(audioInterval.current);
-    }, [mediaState.isPlaying, playbackSpeed]);
-
+    // Speed Sync for TTS
     const [ttsProgress, setTtsProgress] = useState(0);
 
     const startTTS = (startIndex = 0) => {
