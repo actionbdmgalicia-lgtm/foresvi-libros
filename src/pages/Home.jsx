@@ -14,16 +14,26 @@ const Home = () => {
     const [recommended, setRecommended] = useState([]);
 
     useEffect(() => {
-        const q = query(collection(db, "books"), orderBy("acceptedDate", "desc"));
-        const unsubscribe = onSnapshot(q, (snapshot) => {
-            const visibleBooks = snapshot.docs
-                .map(doc => ({ ...doc.data(), id: doc.id }))
-                .filter(b => b.isVisible !== false);
+        if (!db) return;
 
-            setFavorites(visibleBooks.filter(book => book.isFavorite));
-            setRecommended(visibleBooks.filter(book => book.recommended));
-            setLatest(visibleBooks.slice(0, 3));
-        });
+        let unsubscribe = () => { };
+        try {
+            const q = query(collection(db, "books"), orderBy("acceptedDate", "desc"));
+            unsubscribe = onSnapshot(q,
+                (snapshot) => {
+                    const visibleBooks = snapshot.docs
+                        .map(doc => ({ ...doc.data(), id: doc.id }))
+                        .filter(b => b.isVisible !== false);
+
+                    setFavorites(visibleBooks.filter(book => book.isFavorite));
+                    setRecommended(visibleBooks.filter(book => book.recommended));
+                    setLatest(visibleBooks.slice(0, 3));
+                },
+                (err) => console.error("Firestore Home Error:", err)
+            );
+        } catch (err) {
+            console.error("Error setting up Home listener:", err);
+        }
 
         return () => unsubscribe();
     }, []);

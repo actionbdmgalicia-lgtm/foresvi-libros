@@ -10,28 +10,46 @@ const BookLibrary = () => {
     const navigate = useNavigate();
 
     useEffect(() => {
+        if (!db) return;
+
         // Real-time listener for Topics
-        const unsubscribeTopics = onSnapshot(collection(db, "topics"), (snapshot) => {
-            const fetchedTopics = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
-            setTopics(fetchedTopics);
-            if (fetchedTopics.length > 0 && !activeTopic) {
-                setActiveTopic(fetchedTopics[0].id);
-            }
-        });
+        let unsubscribeTopics = () => { };
+        try {
+            unsubscribeTopics = onSnapshot(collection(db, "topics"),
+                (snapshot) => {
+                    const fetchedTopics = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                    setTopics(fetchedTopics);
+                    if (fetchedTopics.length > 0 && !activeTopic) {
+                        setActiveTopic(fetchedTopics[0].id);
+                    }
+                },
+                (err) => console.error("Firestore Topics Error:", err)
+            );
+        } catch (err) {
+            console.error("Error setting up topics listener:", err);
+        }
 
         // Real-time listener for Books
-        const qBooks = query(collection(db, "books"), orderBy("acceptedDate", "desc"));
-        const unsubscribeBooks = onSnapshot(qBooks, (snapshot) => {
-            const books = snapshot.docs
-                .map(doc => ({ ...doc.data(), id: doc.id }))
-                .filter(b => b.isVisible !== false)
-                .sort((a, b) => {
-                    if (a.recommended && !b.recommended) return -1;
-                    if (!a.recommended && b.recommended) return 1;
-                    return 0; // Already sorted by date in query
-                });
-            setAcceptedBooks(books);
-        });
+        let unsubscribeBooks = () => { };
+        try {
+            const qBooks = query(collection(db, "books"), orderBy("acceptedDate", "desc"));
+            unsubscribeBooks = onSnapshot(qBooks,
+                (snapshot) => {
+                    const books = snapshot.docs
+                        .map(doc => ({ ...doc.data(), id: doc.id }))
+                        .filter(b => b.isVisible !== false)
+                        .sort((a, b) => {
+                            if (a.recommended && !b.recommended) return -1;
+                            if (!a.recommended && b.recommended) return 1;
+                            return 0; // Already sorted by date in query
+                        });
+                    setAcceptedBooks(books);
+                },
+                (err) => console.error("Firestore Books Error:", err)
+            );
+        } catch (err) {
+            console.error("Error setting up books listener:", err);
+        }
 
         return () => {
             unsubscribeTopics();
