@@ -1,4 +1,5 @@
 import React from 'react';
+// Version: 1.0.5 - 2026-01-28 20:53
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
