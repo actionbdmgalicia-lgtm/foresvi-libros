@@ -79,8 +79,7 @@ const BookDetail = () => {
     const [mediaState, setMediaState] = useState({
         isPlaying: false,
         currentTime: 0,
-        duration: 300, // Default 5 mins
-        iframeSrc: ''
+        duration: 300
     });
 
     // Speed Sync for TTS

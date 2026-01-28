@@ -30,10 +30,11 @@ const callOpenAI = async (prompt) => {
 
 const extractVideoId = (query) => {
     if (!query) return null;
+    query = query.trim();
     if (/^[A-Za-z0-9_-]{11}$/.test(query)) return query;
-    const regExp = /^.*(youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]{11}).*/;
+    const regExp = /^.*(?:youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]{11})/;
     const match = query.match(regExp);
-    return (match && match[2].length === 11) ? match[2] : null;
+    return (match && match[1].length === 11) ? match[1] : null;
 };
 
 // Real YouTube Search Service
@@ -68,26 +69,27 @@ const searchYouTube = async (query, filters = {}) => {
         const data = await response.json();
 
         if (data.error) throw new Error(data.error.message);
+        if (videoId && (!data.items || data.items.length === 0)) {
+            alert("⚠️ No se pudo encontrar el video directo. Puede ser un enlace incorrecto o video privado.");
+            return [];
+        }
 
-        let items = data.items;
+        let items = data.items || [];
         if (!videoId) {
+            if (items.length === 0) return [];
             // For search, we need to fetch stats separately
             const ids = items.map(item => item.id.videoId).join(',');
             const statsRes = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=statistics,contentDetails&id=${ids}&key=${YOUTUBE_API_KEY}`);
             const statsData = await statsRes.json();
-            items = items.map(item => ({
-                ...item,
-                id: item.id.videoId, // Normalize ID
-                contentDetails: statsData.items.find(s => s.id === item.id.videoId)?.contentDetails,
-                statistics: statsData.items.find(s => s.id === item.id.videoId)?.statistics
-            }));
-        } else {
-            // For direct ID, it's already in the top level
-            items = items.map(item => ({
-                ...item,
-                statistics: item.statistics,
-                contentDetails: item.contentDetails
-            }));
+            items = items.map(item => {
+                const stats = statsData.items?.find(s => s.id === item.id.videoId);
+                return {
+                    ...item,
+                    id: item.id.videoId,
+                    contentDetails: stats?.contentDetails,
+                    statistics: stats?.statistics
+                };
+            });
         }
 
         return items.map(item => {
@@ -410,6 +412,7 @@ const AdminDashboard = () => {
                                     onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
                                     style={{ flex: 1, padding: '0.6rem 1rem', borderRadius: '8px', border: '1px solid var(--border-subtle)', outline: 'none' }}
                                 />
+                                <button onClick={() => setSearchQuery('')} className="btn btn-outline" style={{ padding: '0.6rem 1rem' }}>Limpiar</button>
                                 <button onClick={handleSearch} className="btn btn-primary" style={{ padding: '0.6rem 1.5rem' }}>Buscar</button>
                             </div>
 
