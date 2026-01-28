@@ -27,6 +27,16 @@ const Navbar = () => {
                 </Link>
                 <div style={{ display: 'flex', gap: '2rem' }}>
                     <Link to="/" style={{ color: 'var(--text-primary)' }}>Inicio</Link>
+                    <a
+                        href="#library"
+                        onClick={(e) => {
+                            e.preventDefault();
+                            const el = document.getElementById('library');
+                            if (el) el.scrollIntoView({ behavior: 'smooth' });
+                            else window.location.href = '/#library';
+                        }}
+                        style={{ color: 'var(--text-secondary)' }}
+                    >Biblioteca</a>
                     <a href="#methodology" style={{ color: 'var(--text-secondary)' }}>Método</a>
                     <a href="#pricing" style={{ color: 'var(--text-secondary)' }}>Planes</a>
                     <Link to="/admin" style={{ color: 'var(--accent-gold)', fontWeight: '600' }}>Panel Técnico</Link>

@@ -16,7 +16,11 @@ const Hero = () => {
         </p>
         <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
           <button className="btn btn-primary" style={{ padding: '0.7rem 1.5rem' }}>Empieza Ahora Gratis</button>
-          <button className="btn btn-outline" style={{ padding: '0.7rem 1.5rem' }}>Ver Biblioteca</button>
+          <button
+            className="btn btn-outline"
+            style={{ padding: '0.7rem 1.5rem' }}
+            onClick={() => document.getElementById('library').scrollIntoView({ behavior: 'smooth' })}
+          >Ver Biblioteca</button>
         </div>
       </div>
     </section>

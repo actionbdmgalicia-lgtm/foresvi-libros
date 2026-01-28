@@ -80,8 +80,13 @@ const BookDetail = () => {
     }, [id]);
 
     // 2. AUDIO LOGIC (Decoupled Timer)
+    // Speed State
+    const [playbackSpeed, setPlaybackSpeed] = useState(1);
+
     useEffect(() => {
         if (mediaState.isPlaying) {
+            // Adjust interval based on speed: slower speed = longer interval, faster = shorter
+            const intervalMs = 1000 / playbackSpeed;
             audioInterval.current = setInterval(() => {
                 setMediaState(prev => {
                     if (prev.currentTime >= prev.duration) {
@@ -89,42 +94,76 @@ const BookDetail = () => {
                     }
                     return { ...prev, currentTime: prev.currentTime + 1 };
                 });
-            }, 1000);
+            }, intervalMs);
         } else {
             clearInterval(audioInterval.current);
         }
         return () => clearInterval(audioInterval.current);
-    }, [mediaState.isPlaying]);
+    }, [mediaState.isPlaying, playbackSpeed]);
 
-    // Speed State
-    const [playbackSpeed, setPlaybackSpeed] = useState(1);
+    const [ttsProgress, setTtsProgress] = useState(0);
 
-    // 3. TTS LOGIC
-    useEffect(() => {
-        return () => synth.cancel();
-    }, []);
+    const startTTS = (startIndex = 0) => {
+        if (!book) return;
+        synth.cancel();
+
+        const fullText = ttsState.mode === 'transcription' ? book.transcription : book.summary;
+        const textToRead = fullText.slice(startIndex);
+
+        if (!textToRead.trim()) return;
+
+        const utterance = new SpeechSynthesisUtterance(textToRead);
+        utterance.lang = 'es-ES';
+        utterance.rate = playbackSpeed;
+
+        utterance.onboundary = (event) => {
+            if (event.name === 'word') {
+                setTtsProgress(startIndex + event.charIndex);
+            }
+        };
+
+        utterance.onend = () => {
+            if (!synth.speaking) {
+                setTtsState(prev => ({ ...prev, isSpeaking: false }));
+                setTtsProgress(0);
+            }
+        };
+
+        synth.speak(utterance);
+        setTtsState(prev => ({ ...prev, isSpeaking: true }));
+    };
 
     const toggleTTS = () => {
         if (ttsState.isSpeaking) {
             synth.cancel();
             setTtsState(prev => ({ ...prev, isSpeaking: false }));
         } else {
-            if (!book) return;
-            const textToRead = ttsState.mode === 'transcription' ? book.transcription : book.summary;
-            const utterance = new SpeechSynthesisUtterance(textToRead);
-            utterance.lang = 'es-ES';
-            utterance.rate = playbackSpeed; // Apply selected speed
-            utterance.onend = () => setTtsState(prev => ({ ...prev, isSpeaking: false }));
-            synth.speak(utterance);
-            setTtsState(prev => ({ ...prev, isSpeaking: true }));
+            startTTS(ttsProgress);
         }
     };
+
+    useEffect(() => {
+        if (ttsState.isSpeaking) {
+            startTTS(ttsProgress);
+        }
+    }, [playbackSpeed]);
 
     // 4. HELPER: Time Formatter
     const formatTime = (s) => {
         const mins = Math.floor(s / 60);
         const secs = s % 60;
         return `${mins}:${secs.toString().padStart(2, '0')}`;
+    };
+
+    const renderTextWithBold = (text) => {
+        if (!text) return null;
+        const parts = text.split(/(\*\*.*?\*\*)/g);
+        return parts.map((part, i) => {
+            if (part.startsWith('**') && part.endsWith('**')) {
+                return <strong key={i}>{part.slice(2, -2)}</strong>;
+            }
+            return part;
+        });
     };
 
     const handleSeek = (newTime) => {
@@ -172,7 +211,7 @@ const BookDetail = () => {
 
     const SpeedSelector = () => (
         <div style={{ display: 'flex', gap: '0.3rem', justifyContent: 'center', marginBottom: '1.5rem', background: '#f1f5f9', padding: '0.3rem', borderRadius: '50px', width: 'fit-content', margin: '0 auto 1.5rem auto' }}>
-            {[1, 1.25, 1.5, 1.75, 2, 3].map(speed => (
+            {[0.75, 0.9, 1, 1.25, 1.5, 2].map(speed => (
                 <button
                     key={speed}
                     onClick={() => setPlaybackSpeed(speed)}
@@ -325,10 +364,12 @@ const BookDetail = () => {
 
                             <div style={{ fontSize: '1.1rem', lineHeight: '1.8', color: '#1e293b', whiteSpace: 'pre-line' }}>
                                 {textMode === 'infinite' ? (
-                                    paragraphs.join('\n\n')
+                                    paragraphs.map((p, i) => (
+                                        <p key={i} style={{ marginBottom: '1.5rem' }}>{renderTextWithBold(p)}</p>
+                                    ))
                                 ) : (
                                     <div>
-                                        <p>{currentParagraph}</p>
+                                        <p>{renderTextWithBold(currentParagraph)}</p>
                                         <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem', marginTop: '2rem' }}>
                                             <button disabled={page === 0} onClick={() => setPage(p => p - 1)} className="btn btn-outline">Anterior</button>
                                             <span style={{ alignSelf: 'center', fontSize: '0.9rem', color: '#64748b' }}>{page + 1} / {paragraphs.length}</span>

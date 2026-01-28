@@ -299,9 +299,9 @@ const AdminDashboard = () => {
     // AI Processing Functions (Real OpenAI Integration)
     const generateTranscription = async () => {
         setIsProcessing(true);
-        const prompt = `Genera una transcripción técnica detallada y real para un video titulado "${selectedVideo.title}". 
+        const prompt = `Genera una transcripción técnica COMPLETA y EXHAUSTIVA para el video titulado "${selectedVideo.title}". 
         Descripción original: ${selectedVideo.description}. 
-        IMPORTANTE: No incluyas números de segundos ni marcas de tiempo. Hazlo en un lenguaje profesional, formativo y técnico.`;
+        IMPORTANTE: No resumas. Necesito el contenido íntegro en formato de texto fluido y profesional. No incluyas números de segundos ni marcas de tiempo. Hazlo en un lenguaje técnico perfecto para profesionales de FORESVI.`;
 
         const result = await callOpenAI(prompt);
         if (result) setRawTranscription(result);
@@ -310,13 +310,14 @@ const AdminDashboard = () => {
 
     const generateSummary = async () => {
         setIsProcessing(true);
-        const prompt = `Crea un resumen inteligente y estructurado para el video "${selectedVideo.title}". 
-        Usa este formato: 
-        📌 RESUMEN ESTRATÉGICO
-        🎯 OBJETIVO PRINCIPAL
-        💡 IDEAS CLAVE (lista de puntos técnicos)
-        ✅ CONCLUSIÓN PARA EL PROFESIONAL.
-        Básate en esta descripción: ${selectedVideo.description}`;
+        const prompt = `Crea un resumen corporativo de alto impacto para el video "${selectedVideo.title}". 
+        Usa exactamente este formato de secciones: 
+        📌 **RESUMEN ESTRATÉGICO**
+        🎯 **OBJETIVO PRINCIPAL**
+        💡 **IDEAS CLAVE** (lista detallada de puntos técnicos con negritas)
+        ✅ **CONCLUSIÓN PARA EL PROFESIONAL**
+        Básate en esta descripción: ${selectedVideo.description}. 
+        IMPORTANTE: Usa negritas con el formato **texto** para resaltar conceptos críticos.`;
 
         const result = await callOpenAI(prompt);
         if (result) setAiSummary(result);
