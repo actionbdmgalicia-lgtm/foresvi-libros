@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { db } from '../firebase';
 import { doc, getDoc } from 'firebase/firestore';
-import ReactPlayer from 'react-player/youtube';
+import ReactPlayer from 'react-player';
 
 const BookDetail = () => {
     const { id } = useParams();
