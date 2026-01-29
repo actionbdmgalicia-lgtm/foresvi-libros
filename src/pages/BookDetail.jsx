@@ -368,7 +368,6 @@ const BookDetail = () => {
                                 height="100%"
                                 controls
                                 playbackRate={playbackSpeed}
-                                playing={false}
                             />
                         </div>
                     )}
