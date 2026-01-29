@@ -293,7 +293,24 @@ const BookDetail = () => {
                         <div style={{ textAlign: 'center', maxWidth: '500px', margin: '0 auto' }}>
                             <div style={{ fontSize: '4rem', marginBottom: '1rem' }}>🎧</div>
                             <h3 style={{ marginBottom: '0.5rem' }}>Reproductor de Audio</h3>
-                            <p style={{ color: '#64748b', marginBottom: '2rem' }}>Escucha el contenido extraído del video</p>
+                            <p style={{ color: '#64748b', marginBottom: '1.5rem' }}>Escucha el contenido extraído del video</p>
+
+                            {/* Visible Player for Compatibility */}
+                            <div style={{ borderRadius: '12px', overflow: 'hidden', marginBottom: '1.5rem', border: '1px solid var(--border-subtle)' }}>
+                                <ReactPlayer
+                                    ref={playerRef}
+                                    url={`https://www.youtube.com/watch?v=${book.id}`}
+                                    width="100%"
+                                    height="200px" // Compact height
+                                    controls={true} // Native controls as backup
+                                    playing={mediaState.isPlaying && activeTab !== 'video'}
+                                    playbackRate={playbackSpeed}
+                                    onProgress={(state) => {
+                                        setMediaState(prev => ({ ...prev, currentTime: Math.floor(state.playedSeconds) }));
+                                    }}
+                                    onDuration={(d) => setMediaState(prev => ({ ...prev, duration: d }))}
+                                />
+                            </div>
 
                             <SpeedSelector />
 
@@ -338,19 +355,6 @@ const BookDetail = () => {
                         </div>
                     )}
 
-                    {/* PERSISTENT BACKGROUND AUDIO PLAYER (Hidden visually but active) */}
-                    <div style={{ position: 'fixed', top: '-9999px', left: '-9999px', opacity: 0, pointerEvents: 'none' }}>
-                        <ReactPlayer
-                            ref={playerRef}
-                            url={`https://www.youtube.com/watch?v=${book.id}`}
-                            playing={mediaState.isPlaying && activeTab !== 'video'}
-                            playbackRate={playbackSpeed}
-                            onProgress={(state) => {
-                                setMediaState(prev => ({ ...prev, currentTime: Math.floor(state.playedSeconds) }));
-                            }}
-                            onDuration={(d) => setMediaState(prev => ({ ...prev, duration: d }))}
-                        />
-                    </div>
 
                     {/* TEXT READER */}
                     {activeTab === 'texto' && (
