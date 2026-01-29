@@ -338,8 +338,8 @@ const BookDetail = () => {
                         </div>
                     )}
 
-                    {/* PERSISTENT BACKGROUND AUDIO PLAYER (Hidden) */}
-                    <div style={{ display: 'none' }}>
+                    {/* PERSISTENT BACKGROUND AUDIO PLAYER (Hidden visually but active) */}
+                    <div style={{ position: 'fixed', top: '-9999px', left: '-9999px', opacity: 0, pointerEvents: 'none' }}>
                         <ReactPlayer
                             ref={playerRef}
                             url={`https://www.youtube.com/watch?v=${book.id}`}

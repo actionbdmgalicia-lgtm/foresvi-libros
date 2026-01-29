@@ -67,7 +67,7 @@ const searchYouTube = async (query, filters = {}) => {
                 filterParams += `&relevanceLanguage=${filters.lang}`;
             }
 
-            url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=12&q=${query}&type=video&order=relevance${filterParams}&key=${YOUTUBE_API_KEY}`;
+            url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=12&q=${query}&type=video&order=viewCount${filterParams}&key=${YOUTUBE_API_KEY}`;
         }
 
         const response = await fetch(url);
