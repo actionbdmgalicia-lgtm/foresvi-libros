@@ -295,59 +295,29 @@ const BookDetail = () => {
                             <h3 style={{ marginBottom: '0.5rem' }}>Reproductor de Audio</h3>
                             <p style={{ color: '#64748b', marginBottom: '1.5rem' }}>Escucha el contenido extraído del video</p>
 
-                            {/* Visible Player for Compatibility */}
-                            <div style={{ borderRadius: '12px', overflow: 'hidden', marginBottom: '1.5rem', border: '1px solid var(--border-subtle)' }}>
+                            {/* Visible Player - The Master Control */}
+                            <div style={{ borderRadius: '12px', overflow: 'hidden', marginBottom: '1.5rem', border: '1px solid var(--border-subtle)', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
                                 <ReactPlayer
                                     ref={playerRef}
                                     url={`https://www.youtube.com/watch?v=${book.id}`}
                                     width="100%"
-                                    height="200px" // Compact height
-                                    controls={true} // Native controls as backup
-                                    playing={mediaState.isPlaying && activeTab !== 'video'}
+                                    height="220px"
+                                    controls={true}
                                     playbackRate={playbackSpeed}
-                                    onProgress={(state) => {
-                                        setMediaState(prev => ({ ...prev, currentTime: Math.floor(state.playedSeconds) }));
+                                    config={{
+                                        youtube: {
+                                            playerVars: { showinfo: 1, controls: 1 }
+                                        }
                                     }}
-                                    onDuration={(d) => setMediaState(prev => ({ ...prev, duration: d }))}
                                 />
                             </div>
 
                             <SpeedSelector />
 
-                            {/* Progress Bar */}
-                            <div
-                                style={{ height: '8px', background: '#e2e8f0', borderRadius: '4px', marginBottom: '1rem', cursor: 'pointer', position: 'relative' }}
-                                onClick={(e) => {
-                                    const rect = e.currentTarget.getBoundingClientRect();
-                                    const pct = (e.clientX - rect.left) / rect.width;
-                                    handleSeek(Math.floor(pct * mediaState.duration));
-                                }}
-                            >
-                                <div style={{ width: `${(mediaState.currentTime / mediaState.duration) * 100}%`, height: '100%', background: 'var(--accent-primary)', borderRadius: '4px' }}></div>
-                            </div>
-
-                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#64748b', marginBottom: '2rem' }}>
-                                <span>{formatTime(mediaState.currentTime)}</span>
-                                <span>{formatTime(mediaState.duration)}</span>
-                            </div>
-
-                            {/* Controls */}
-                            <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem', alignItems: 'center', marginBottom: '2rem' }}>
-                                <button onClick={() => handleSeek(Math.max(0, mediaState.currentTime - 15))} className="btn btn-outline" style={{ borderRadius: '50%', width: '40px', height: '40px', padding: 0 }}>-15</button>
-                                <button
-                                    onClick={() => setMediaState(s => ({ ...s, isPlaying: !s.isPlaying }))}
-                                    className="btn btn-primary"
-                                    style={{ borderRadius: '50%', width: '60px', height: '60px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.5rem' }}
-                                >
-                                    {mediaState.isPlaying ? '⏸' : '▶'}
-                                </button>
-                                <button onClick={() => handleSeek(Math.min(mediaState.duration, mediaState.currentTime + 15))} className="btn btn-outline" style={{ borderRadius: '50%', width: '40px', height: '40px', padding: 0 }}>+15</button>
-                            </div>
-
                             <button
-                                onClick={() => alert("Descarga iniciada... En producción, esto descargará un archivo .mp3 optimizado.")}
+                                onClick={() => alert("Función de descarga en desarrollo. Pronto podrás guardar el audio.")}
                                 className="btn btn-outline"
-                                style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', padding: '0.8rem' }}
+                                style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', padding: '0.8rem', marginTop: '1rem' }}
                             >
                                 ⬇️ Descargar Audio para modo Offline
                             </button>
