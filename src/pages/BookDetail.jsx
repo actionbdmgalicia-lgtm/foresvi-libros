@@ -306,7 +306,13 @@ const BookDetail = () => {
                                     playbackRate={playbackSpeed}
                                     config={{
                                         youtube: {
-                                            playerVars: { showinfo: 1, controls: 1 }
+                                            playerVars: {
+                                                showinfo: 1,
+                                                controls: 1,
+                                                origin: window.location.origin, // Critical for avoiding blocks
+                                                rel: 0, // No related videos at end
+                                                modestbranding: 1
+                                            }
                                         }
                                     }}
                                 />
