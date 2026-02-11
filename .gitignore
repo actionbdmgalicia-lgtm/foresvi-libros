@@ -27,3 +27,18 @@ dist-ssr
 .env
 .env.local
 .env.*.local
+
+# Firebase Admin credentials
+firebase-admin-key.json
+*-firebase-adminsdk-*.json
+
+# Credentials & Secrets (Added by Foresvi Assistant)
+client_secret.json
+youtube-token.json
+youtube-oauth-client.json
+google-auth-client.json
+drive-token.json
+*.log
+*.mp3
+*.mp4
+*.png

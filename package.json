@@ -1,7 +1,7 @@
 {
   "name": "libros-foresvi",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,17 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "axios": "^1.13.4",
+    "body-parser": "^2.2.2",
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "ffmpeg-static": "^5.3.0",
     "firebase": "^12.8.0",
+    "firebase-admin": "^13.6.0",
+    "fluent-ffmpeg": "^2.1.3",
+    "form-data": "^4.0.5",
+    "googleapis": "^171.0.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-player": "^3.4.0",
@@ -18,13 +28,17 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
+    "@tailwindcss/forms": "^0.5.11",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
+    "autoprefixer": "^10.4.24",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.19",
     "vite": "^7.2.4"
   }
 }

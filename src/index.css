@@ -1,23 +1,41 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter+Tight:ital,wght@0,100..900;1,100..900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 :root {
+  font-family: 'Outfit', Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light dark;
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #242424;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
   /* Color Palette - FORESVI Identity */
   --bg-primary: #ffffff;
   --bg-secondary: #f8fafc;
   --bg-tertiary: #f1f5f9;
 
   --text-primary: #0f172a;
-  --text-secondary: #334155;
-  --text-muted: #64748b;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
 
-  --accent-primary: #202189;
+  --accent-primary: #2563eb;
   /* FORESVI Primary Blue */
   --accent-secondary: #204058;
   /* FORESVI Secondary Blue */
-  --accent-gold: #b45309;
+  --accent-gold: #f59e0b;
   /* VIP Gold */
 
   --border-subtle: #e2e8f0;
+  --bg-primary-translucent: rgba(255, 255, 255, 0.85);
 
   /* Gradients */
   --gradient-hero: linear-gradient(135deg, #f0f4ff 0%, #ffffff 100%);
