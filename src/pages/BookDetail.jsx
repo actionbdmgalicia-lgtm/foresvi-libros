@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { db } from '../firebase';
 import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { useAuth } from '../context/AuthContext';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 // ============================================================================
 // STEPPER COMPONENT: NotebookLM → Drive Sync → YouTube Link → Roadmap Ready
@@ -111,7 +112,7 @@ const YouTubeLinkInput = ({ bookId, currentYoutubeId, onLinked }) => {
         setMessage(null);
 
         try {
-            const res = await fetch(`/api/books/${bookId}/youtube-link`, {
+            const res = await fetch(`${API_BASE}/api/books/${bookId}/youtube-link`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ youtubeUrl: url })
@@ -228,7 +229,7 @@ const RoadmapViewer = ({ roadmap, bookId, notebookId }) => {
         setError(null);
 
         try {
-            const res = await fetch(`/api/books/${bookId}/generate-roadmap`, {
+            const res = await fetch(`${API_BASE}/api/books/${bookId}/generate-roadmap`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' }
             });
@@ -564,7 +565,7 @@ const BookDetail = () => {
     const reprocessBook = async () => {
         if (!window.confirm('¿Forzar sincronización con Google Drive?')) return;
         try {
-            const res = await fetch(`/api/process-artifacts/${id}?force=1`, {
+            const res = await fetch(`${API_BASE}/api/process-artifacts/${id}?force=1`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

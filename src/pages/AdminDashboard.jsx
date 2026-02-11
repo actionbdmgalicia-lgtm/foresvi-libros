@@ -7,6 +7,7 @@ import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc, setDoc, query, 
 
 const YOUTUBE_API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY;
 const OPENAI_API_KEY = import.meta.env.VITE_OPENAI_API_KEY;
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 // OpenAI Service
 const callOpenAI = async (prompt) => {
@@ -244,7 +245,7 @@ const AdminDashboard = () => {
             await setDoc(doc(db, "books", customId), newBook, { merge: true });
 
             // Call Backend Orchestrator
-            const response = await fetch('/api/generate-orchestrated', {
+            const response = await fetch(`${API_BASE}/api/generate-orchestrated', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -277,7 +278,7 @@ const AdminDashboard = () => {
 
         try {
             alert('Funcionalidad de subida pendiente de completar (Backend Ready).');
-            // await fetch('/api/youtube/upload', { ... });
+            // await fetch(`${API_BASE}/api/youtube/upload', { ... });
         } catch (e) {
             alert('Error en subida: ' + e.message);
         }
@@ -358,7 +359,7 @@ const AdminDashboard = () => {
 
             for (const vid of videosProcessing) {
                 try {
-                    const res = await fetch(`/api/jobs/${vid.generationJobId}`);
+                    const res = await fetch(`${API_BASE}/api/jobs/${vid.generationJobId}`);
 
                     if (res.status === 404) {
                         console.warn(`⚠️ Job ${vid.generationJobId} not found server-side (likely restart). Marking as failed.`);
@@ -398,7 +399,7 @@ const AdminDashboard = () => {
 
         const fetchLogs = async () => {
             try {
-                const res = await fetch(`/api/jobs/${viewingLogsFor.generationJobId}`);
+                const res = await fetch(`${API_BASE}/api/jobs/${viewingLogsFor.generationJobId}`);
                 if (res.status === 404) {
                     setLiveLogs(prev => [...prev, { time: new Date(), msg: `❌ El trabajo ya no existe en el servidor.` }]);
                     return;
@@ -484,7 +485,7 @@ const AdminDashboard = () => {
                     if (!book.notebookId) continue;
 
                     // 1. Check NotebookLM Status
-                    const res = await fetch(`/api/check-artifacts/${book.notebookId}`);
+                    const res = await fetch(`${API_BASE}/api/check-artifacts/${book.notebookId}`);
                     if (!res.ok) continue;
 
                     const data = await res.json();
@@ -514,7 +515,7 @@ const AdminDashboard = () => {
                         });
 
                         // Call Backend V4
-                        fetch(`/api/process-artifacts/${book.id}`, {
+                        fetch(`${API_BASE}/api/process-artifacts/${book.id}`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
@@ -604,7 +605,7 @@ const AdminDashboard = () => {
 
                 console.log("📤 Enviando petición a Bridge...", { title: video.title, sources });
 
-                const response = await fetch('/api/generate', {
+                const response = await fetch(`${API_BASE}/api/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -720,7 +721,7 @@ const AdminDashboard = () => {
 
         // Trigger generation again
         try {
-            const response = await fetch('/api/generate', {
+            const response = await fetch(`${API_BASE}/api/generate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1153,7 +1154,7 @@ const AdminDashboard = () => {
                                     if (isProcessing) return;
                                     setIsProcessing(true);
                                     try {
-                                        const res = await fetch('/api/youtube/sync-playlist', { method: 'POST' });
+                                        const res = await fetch(`${API_BASE}/api/youtube/sync-playlist', { method: 'POST' });
                                         const data = await res.json();
                                         if (data.success) {
                                             alert(`Sincronización completada.\n\nLibros actualizados: ${data.updatedCount}\nErrores: ${data.errors.length}`);
@@ -1419,7 +1420,7 @@ const AdminDashboard = () => {
                                                                         if (!confirm(`¿Sincronizar "${selectedVideo.title}" con Google Drive?`)) return;
                                                                         try {
                                                                             alert('Iniciando sincronización...');
-                                                                            await fetch(`/api/process-artifacts/${selectedVideo.id}`, {
+                                                                            await fetch(`${API_BASE}/api/process-artifacts/${selectedVideo.id}`, {
                                                                                 method: 'POST',
                                                                                 headers: { 'Content-Type': 'application/json' },
                                                                                 body: JSON.stringify({
@@ -1452,7 +1453,7 @@ const AdminDashboard = () => {
                                                                     onClick={async () => {
                                                                         if (!confirm(`¿Generar Roadmap para "${selectedVideo.title}"?`)) return;
                                                                         try {
-                                                                            const res = await fetch(`/api/books/${selectedVideo.id}/generate-roadmap`, { method: 'POST' });
+                                                                            const res = await fetch(`${API_BASE}/api/books/${selectedVideo.id}/generate-roadmap`, { method: 'POST' });
                                                                             const d = await res.json();
                                                                             if (d.success) alert('Roadmap generado correctamente.');
                                                                             else alert('Error: ' + d.error);
@@ -1697,7 +1698,7 @@ const AdminDashboard = () => {
 
                                                                 // 1. Ping Check
                                                                 try {
-                                                                    const ping = await fetch('/api/ping');
+                                                                    const ping = await fetch(`${API_BASE}/api/ping');
                                                                     if (!ping.ok) throw new Error(`Ping failed: ${ping.status}`);
                                                                     await ping.json();
                                                                 } catch (e) {
@@ -1705,7 +1706,7 @@ const AdminDashboard = () => {
                                                                 }
 
                                                                 // 2. Download Request
-                                                                const res = await fetch(`/api/download-upload-audio/${bookId}`, {
+                                                                const res = await fetch(`${API_BASE}/api/download-upload-audio/${bookId}`, {
                                                                     method: 'POST',
                                                                     headers: { 'Content-Type': 'application/json' },
                                                                     body: JSON.stringify({ notebookId: notebookId })
