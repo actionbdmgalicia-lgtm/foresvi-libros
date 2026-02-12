@@ -242,6 +242,11 @@ const AdminDashboard = () => {
                 ...selectedVideo
             };
 
+            // Clean undefined fields to avoid Firebase crash
+            Object.keys(newBook).forEach(key => {
+                if (newBook[key] === undefined) delete newBook[key];
+            });
+
             await setDoc(doc(db, "books", customId), newBook, { merge: true });
 
             // Call Backend Orchestrator
