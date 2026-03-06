@@ -215,22 +215,20 @@ p {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   KNOWLEDGE PYRAMID STYLES
+   KNOWLEDGE TABLE STYLES
    ════════════════════════════════════════════════════════════════════════════ */
 
-.piramide-svg {
-  width: 100%;
-  cursor: pointer;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
+.knowledge-table-row {
+  transition: all 0.2s ease;
 }
 
-.piramide-polygon {
-  transition: all 0.3s ease;
-  cursor: pointer;
+.knowledge-table-row:hover {
+  background: rgba(0, 51, 73, 0.04) !important;
 }
 
-.piramide-polygon:hover {
-  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.2));
+.knowledge-table-row.selected {
+  background: rgba(226, 84, 84, 0.08) !important;
+  border-left-color: #E25454 !important;
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
