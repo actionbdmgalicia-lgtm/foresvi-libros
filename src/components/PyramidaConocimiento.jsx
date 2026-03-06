@@ -1,7 +1,9 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import BookResultCard from './BookResultCard';
+import AdvancedSearch from './AdvancedSearch';
 
 export default function PyramidaConocimiento({ piramidaTemas, libros, selectedTema, onSelectTema }) {
+    const [viewMode, setViewMode] = useState('pyramid'); // 'pyramid' | 'search'
     const NAVY = '#003349';
     const RED = '#E25454';
     const GRAY = '#717B8D';
@@ -67,13 +69,58 @@ export default function PyramidaConocimiento({ piramidaTemas, libros, selectedTe
     };
 
     return (
-        <div style={{
-            display: 'grid',
-            gridTemplateColumns: '320px 1fr',
-            gap: '2rem',
-            padding: '2rem',
-            minHeight: '70vh'
-        }}>
+        <div style={{ padding: '2rem', minHeight: '70vh' }}>
+            {/* TOGGLE ENTRE VISTAS */}
+            <div style={{
+                marginBottom: '2rem',
+                display: 'flex',
+                gap: '0.5rem',
+                background: 'white',
+                padding: '4px',
+                borderRadius: '12px',
+                border: '1px solid #e2e8f0',
+                width: 'fit-content'
+            }}>
+                <button
+                    onClick={() => setViewMode('pyramid')}
+                    style={{
+                        padding: '0.5rem 1.5rem',
+                        borderRadius: '8px',
+                        border: 'none',
+                        background: viewMode === 'pyramid' ? '#003349' : 'transparent',
+                        color: viewMode === 'pyramid' ? 'white' : '#475569',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        fontSize: '0.9rem',
+                        transition: 'all 0.2s'
+                    }}
+                >
+                    🏛️ Pirámide
+                </button>
+                <button
+                    onClick={() => setViewMode('search')}
+                    style={{
+                        padding: '0.5rem 1.5rem',
+                        borderRadius: '8px',
+                        border: 'none',
+                        background: viewMode === 'search' ? '#003349' : 'transparent',
+                        color: viewMode === 'search' ? 'white' : '#475569',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        fontSize: '0.9rem',
+                        transition: 'all 0.2s'
+                    }}
+                >
+                    🔍 Búsqueda Avanzada
+                </button>
+            </div>
+
+            {viewMode === 'pyramid' ? (
+                <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: '320px 1fr',
+                    gap: '2rem'
+                }}>
             {/* COLUMNA IZQUIERDA: Pirámide SVG */}
             <div style={{
                 position: 'sticky',
@@ -280,6 +327,10 @@ export default function PyramidaConocimiento({ piramidaTemas, libros, selectedTe
                     </div>
                 )}
             </div>
+        </div>
+            ) : (
+                <AdvancedSearch libros={libros} />
+            )}
         </div>
     );
 }
