@@ -293,6 +293,10 @@ const AdminDashboard = () => {
     const [selectedPiramidaTema, setSelectedPiramidaTema] = useState(null);
     const [selectedTemaEdicion, setSelectedTemaEdicion] = useState('');
     const [hashtagsEdicion, setHashtagsEdicion] = useState('');
+    const [knowledgeBaseName, setKnowledgeBaseName] = useState('Base de Conocimiento FORESVI');
+    const [knowledgeBaseDescription, setKnowledgeBaseDescription] = useState('Sistema de organización de conocimiento empresarial');
+    const [knowledgeBaseEditing, setKnowledgeBaseEditing] = useState(false);
+    const [knowledgeBaseChanged, setKnowledgeBaseChanged] = useState(false);
 
     // Orchestrated Generation Launch
     const handleLaunchGeneration = async () => {
@@ -336,7 +340,7 @@ const AdminDashboard = () => {
 
         try {
             // Create/Update Book entry
-            const tema = selectedTemaEdicion ? parseInt(selectedTemaEdicion) || parseFloat(selectedTemaEdicion) : null;
+            const tema = selectedTemaEdicion ? parseInt(selectedTemaEdicion) || parseFloat(selectedTemaEdicion) : 1; // Default: Destino (1)
             const autogenHashtags = hashtagsEdicion.trim()
                 ? hashtagsEdicion.split(',').map(h => h.trim())
                 : generateHashtags(title, selectedVideo?.summary || '', tema);
@@ -347,7 +351,7 @@ const AdminDashboard = () => {
                 orchestrationStatus: 'initializing',
                 createdAt: new Date(),
                 acceptedDate: new Date().toISOString(),
-                tema_piramide: tema,
+                tema_piramide: tema, // Always set (default 1: Destino)
                 hashtags: autogenHashtags,
                 // Retain existing fields if updating
                 ...selectedVideo
@@ -1052,7 +1056,11 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                     <div style={{ display: 'flex', gap: '0.5rem', background: 'white', padding: '4px', borderRadius: '12px', border: '1px solid var(--border-subtle)' }}>
                         <button onClick={() => { setActiveTab('search'); setSelectedVideo(null); resetProcessing(); }} className={`btn ${activeTab === 'search' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'search' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'search' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>🔍 Nuevo Libro</button>
                         <button onClick={() => { setActiveTab('database'); setSelectedVideo(null); }} className={`btn ${activeTab === 'database' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'database' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'database' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>📁 Archivo</button>
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem', background: 'white', padding: '4px', borderRadius: '12px', border: '1px solid var(--border-subtle)' }}>
                         <button onClick={() => { setActiveTab('knowledge'); setSelectedVideo(null); }} className={`btn ${activeTab === 'knowledge' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'knowledge' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'knowledge' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>🧠 Base de Conocimiento</button>
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem', background: 'white', padding: '4px', borderRadius: '12px', border: '1px solid var(--border-subtle)' }}>
                         <button onClick={() => setActiveTab('config')} className={`btn ${activeTab === 'config' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'config' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'config' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>⚙️ Ajustes</button>
                     </div>
                 </div>
@@ -1907,57 +1915,146 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                     </div>
                 )}
 
-                {
-                    activeTab === 'config' && (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-                            <div className="card">
-                                <h3 style={{ marginBottom: '1.5rem' }}>Gestión de Categorías ⚙️</h3>
-                                <div style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem' }}>
-                                    <input type="text" id="newTopic" placeholder="Nombre de categoría..." style={{ flex: 1, padding: '0.6rem', border: '1px solid var(--border-subtle)', borderRadius: '8px' }} />
-                                    <button className="btn btn-primary" onClick={() => {
-                                        const i = document.getElementById('newTopic');
-                                        if (i.value) { addTopic(i.value); i.value = ''; }
-                                    }}>Añadir</button>
+                {/* PESTAÑA: AJUSTES DE BASE DE CONOCIMIENTO */}
+                {activeTab === 'config' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+                        {/* CONFIGURACIÓN DE BASE DE CONOCIMIENTO */}
+                        <div className="card" style={{ background: 'linear-gradient(135deg, #f0f4ff 0%, #ffffff 100%)', borderLeft: '4px solid #003349' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.5rem' }}>
+                                <div>
+                                    <h3 style={{ marginBottom: '0.25rem', color: '#003349' }}>🧠 Base de Conocimiento FORESVI</h3>
+                                    <p style={{ fontSize: '0.9rem', color: '#717B8D', margin: 0 }}>Configura el nombre y descripción de tu sistema de conocimiento</p>
                                 </div>
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '0.75rem' }}>
-                                    {topics.map(t => (
-                                        <div key={t.id} style={{ padding: '0.75rem', background: 'var(--bg-secondary)', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem' }}>
-                                            <span>{t.name}</span>
-                                            <button onClick={() => deleteTopic(t.id)} style={{ color: '#ef4444', border: 'none', background: 'none', cursor: 'pointer', fontSize: '1.2rem' }}>×</button>
-                                        </div>
-                                    ))}
-                                </div>
+                                <button
+                                    onClick={() => setKnowledgeBaseEditing(!knowledgeBaseEditing)}
+                                    style={{
+                                        padding: '0.5rem 1rem',
+                                        background: knowledgeBaseEditing ? '#E25454' : '#003349',
+                                        color: 'white',
+                                        border: 'none',
+                                        borderRadius: '8px',
+                                        fontWeight: 600,
+                                        fontSize: '0.9rem',
+                                        cursor: 'pointer',
+                                        transition: 'all 0.2s'
+                                    }}
+                                >
+                                    {knowledgeBaseEditing ? '❌ Cancelar' : '✏️ Editar'}
+                                </button>
                             </div>
 
-                            <div className="card">
-                                <h3 style={{ marginBottom: '1rem' }}>Libros Recomendados (Destacados en Home) 🌟</h3>
-                                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>Gestiona qué libros aparecen en la sección principal de Recomendados.</p>
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1rem' }}>
-                                    {acceptedVideos.map((video, idx) => (
-                                        <div key={video.id} style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.75rem', background: video.recommended ? '#fffbeb' : 'white', borderRadius: '10px', border: video.recommended ? '1px solid #fde68a' : '1px solid var(--border-subtle)' }}>
-                                            <img src={video.thumbnail || undefined} style={{ width: '50px', height: '50px', objectFit: 'cover', borderRadius: '6px' }} alt="" />
-                                            <div style={{ flex: 1 }}>
-                                                <div style={{ fontSize: '0.85rem', fontWeight: 'bold', lineClamp: 1, display: '-webkit-box', WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{video.title}</div>
-                                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{topics.find(t => t.id == video.topicId)?.name}</div>
-                                            </div>
+                            {knowledgeBaseEditing ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                                    {/* Nombre */}
+                                    <div>
+                                        <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.5rem', color: '#003349' }}>
+                                            📌 Nombre de la Base de Conocimiento
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={knowledgeBaseName}
+                                            onChange={(e) => { setKnowledgeBaseName(e.target.value); setKnowledgeBaseChanged(true); }}
+                                            style={{ width: '100%', padding: '0.75rem', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '1rem', boxSizing: 'border-box' }}
+                                        />
+                                    </div>
+
+                                    {/* Descripción */}
+                                    <div>
+                                        <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.5rem', color: '#003349' }}>
+                                            📝 Descripción
+                                        </label>
+                                        <textarea
+                                            value={knowledgeBaseDescription}
+                                            onChange={(e) => { setKnowledgeBaseDescription(e.target.value); setKnowledgeBaseChanged(true); }}
+                                            style={{ width: '100%', padding: '0.75rem', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '1rem', minHeight: '100px', boxSizing: 'border-box', fontFamily: 'inherit' }}
+                                            placeholder="Describe el propósito y alcance de tu base de conocimiento..."
+                                        />
+                                    </div>
+
+                                    {/* Botón Guardar */}
+                                    {knowledgeBaseChanged && (
+                                        <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
                                             <button
                                                 onClick={() => {
-                                                    const updated = [...acceptedVideos];
-                                                    updated[idx].recommended = !updated[idx].recommended;
-                                                    setAcceptedVideos(updated);
+                                                    // Guardar cambios (simplemente actualizamos el estado)
+                                                    setKnowledgeBaseEditing(false);
+                                                    setKnowledgeBaseChanged(false);
+                                                    alert('✅ Cambios guardados correctamente');
                                                 }}
-                                                className={`btn ${video.recommended ? 'btn-primary' : 'btn-outline'}`}
-                                                style={{ padding: '0.4rem 0.6rem', fontSize: '0.7rem', whiteSpace: 'nowrap' }}
+                                                style={{
+                                                    padding: '0.6rem 1.5rem',
+                                                    background: '#16a34a',
+                                                    color: 'white',
+                                                    border: 'none',
+                                                    borderRadius: '8px',
+                                                    fontWeight: 600,
+                                                    cursor: 'pointer',
+                                                    flex: 1
+                                                }}
                                             >
-                                                {video.recommended ? '🌟 Quitar' : '⭐ Destacar'}
+                                                💾 Guardar Cambios
                                             </button>
                                         </div>
-                                    ))}
+                                    )}
+                                </div>
+                            ) : (
+                                <div style={{
+                                    background: 'white',
+                                    padding: '1rem',
+                                    borderRadius: '8px',
+                                    border: '1px solid #cbd5e1'
+                                }}>
+                                    <div style={{ marginBottom: '1rem' }}>
+                                        <p style={{ fontSize: '0.8rem', color: '#717B8D', margin: '0 0 0.25rem 0' }}>Nombre</p>
+                                        <p style={{ fontSize: '1rem', fontWeight: 600, color: '#003349', margin: 0 }}>{knowledgeBaseName}</p>
+                                    </div>
+                                    <div>
+                                        <p style={{ fontSize: '0.8rem', color: '#717B8D', margin: '0 0 0.25rem 0' }}>Descripción</p>
+                                        <p style={{ fontSize: '0.95rem', color: '#475569', margin: 0, lineHeight: '1.5' }}>{knowledgeBaseDescription}</p>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* INFO SOBRE ASIGNACIÓN DE TEMAS */}
+                        <div className="card" style={{ background: '#f0fdf4', borderLeft: '4px solid #16a34a' }}>
+                            <h3 style={{ marginBottom: '1rem', color: '#166534' }}>ℹ️ Información sobre Temas de Pirámide</h3>
+                            <div style={{ fontSize: '0.95rem', color: '#166534', lineHeight: '1.6' }}>
+                                <p style={{ margin: '0 0 0.75rem 0' }}>
+                                    <strong>Todos los libros deben tener asignado un tema de la pirámide de conocimiento.</strong>
+                                </p>
+                                <p style={{ margin: '0 0 0.75rem 0' }}>
+                                    ✓ <strong>Valor por defecto:</strong> "1. Destino" (Nivel básico)
+                                </p>
+                                <p style={{ margin: '0 0 0.75rem 0' }}>
+                                    ✓ <strong>Cómo cambiar:</strong> Ve al Archivo (📁), edita un libro y selecciona el "Tema de Pirámide"
+                                </p>
+                                <p style={{ margin: 0 }}>
+                                    ✓ <strong>Hashtags:</strong> Se generan automáticamente según el tema y contenido del libro
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* ESTADÍSTICAS */}
+                        <div className="card">
+                            <h3 style={{ marginBottom: '1.5rem' }}>📊 Estadísticas de la Base de Conocimiento</h3>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+                                <div style={{ background: '#f0f4ff', padding: '1rem', borderRadius: '8px', border: '1px solid #cbd5e1' }}>
+                                    <p style={{ fontSize: '0.85rem', color: '#717B8D', margin: 0 }}>Total de Libros</p>
+                                    <p style={{ fontSize: '1.8rem', fontWeight: 800, color: '#003349', margin: '0.5rem 0 0 0' }}>{acceptedVideos.length}</p>
+                                </div>
+                                <div style={{ background: '#fef2f2', padding: '1rem', borderRadius: '8px', border: '1px solid #fca5a5' }}>
+                                    <p style={{ fontSize: '0.85rem', color: '#991b1b', margin: 0 }}>Con Tema Asignado</p>
+                                    <p style={{ fontSize: '1.8rem', fontWeight: 800, color: '#E25454', margin: '0.5rem 0 0 0' }}>{acceptedVideos.filter(v => v.tema_piramide).length}</p>
+                                </div>
+                                <div style={{ background: '#f0fdf4', padding: '1rem', borderRadius: '8px', border: '1px solid #86efac' }}>
+                                    <p style={{ fontSize: '0.85rem', color: '#166534', margin: 0 }}>Con Hashtags</p>
+                                    <p style={{ fontSize: '1.8rem', fontWeight: 800, color: '#16a34a', margin: '0.5rem 0 0 0' }}>{acceptedVideos.filter(v => v.hashtags?.length > 0).length}</p>
                                 </div>
                             </div>
                         </div>
-                    )
-                }
+                    </div>
+                )}
                 {/* MODAL COMPACTO */}
                 {
                     selectedVideo && (

@@ -137,59 +137,87 @@ export default function BookResultCard({ libro, onSelect }) {
                 </div>
             )}
 
-            {/* Botones de Acceso */}
+            {/* Botones de Acceso - Vista Mejorada */}
             <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(5, 1fr)',
-                gap: '0.5rem',
                 borderTop: '1px solid #e2e8f0',
-                paddingTop: '1rem'
+                paddingTop: '1rem',
+                marginTop: '1rem'
             }}>
-                {artifacts.map(({ emoji, type, label }) => {
-                    const url = getArtifactUrl(type);
-                    const hasArtifact = !!url;
+                <p style={{
+                    fontSize: '0.75rem',
+                    fontWeight: 600,
+                    color: '#717B8D',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    marginBottom: '0.75rem'
+                }}>
+                    📦 Contenidos Disponibles
+                </p>
+                <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(48px, 1fr))',
+                    gap: '0.4rem'
+                }}>
+                    {artifacts.map(({ emoji, type, label }) => {
+                        const url = getArtifactUrl(type);
+                        const hasArtifact = !!url;
 
-                    return (
-                        <a
-                            key={type}
-                            href={hasArtifact ? `${API_BASE}/api/drive-file?path=${encodeURIComponent(url)}&download=true` : '#'}
-                            target={hasArtifact ? '_blank' : undefined}
-                            rel={hasArtifact ? 'noopener noreferrer' : undefined}
-                            style={{
-                                display: 'flex',
-                                flexDirection: 'column',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                padding: '0.75rem',
-                                background: hasArtifact ? '#f0f4ff' : '#f8fafc',
-                                border: hasArtifact ? '1.5px solid #003349' : '1px solid #cbd5e1',
-                                borderRadius: '8px',
-                                textDecoration: 'none',
-                                opacity: hasArtifact ? 1 : 0.4,
-                                pointerEvents: hasArtifact ? 'auto' : 'none',
-                                transition: 'all 0.2s ease',
-                                cursor: hasArtifact ? 'pointer' : 'default',
-                                ':hover': hasArtifact ? {
-                                    background: '#e0ebff',
-                                    borderColor: '#1e3a8a',
-                                    transform: 'scale(1.05)'
-                                } : {}
-                            }}
-                            title={label}
-                        >
-                            <span style={{ fontSize: '1.2rem' }}>{emoji}</span>
-                            <span style={{
-                                fontSize: '0.65rem',
-                                marginTop: '0.25rem',
-                                color: hasArtifact ? '#003349' : '#94a3b8',
-                                fontWeight: '600',
-                                textAlign: 'center'
-                            }}>
-                                {label}
-                            </span>
-                        </a>
-                    );
-                })}
+                        return (
+                            <a
+                                key={type}
+                                href={hasArtifact ? `${API_BASE}/api/drive-file?path=${encodeURIComponent(url)}&download=true` : '#'}
+                                target={hasArtifact ? '_blank' : undefined}
+                                rel={hasArtifact ? 'noopener noreferrer' : undefined}
+                                style={{
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    padding: '0.6rem',
+                                    background: hasArtifact ? '#f0f4ff' : '#fafbfc',
+                                    border: hasArtifact ? '1.5px solid #003349' : '1px solid #e2e8f0',
+                                    borderRadius: '10px',
+                                    textDecoration: 'none',
+                                    opacity: hasArtifact ? 1 : 0.35,
+                                    pointerEvents: hasArtifact ? 'auto' : 'none',
+                                    transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+                                    cursor: hasArtifact ? 'pointer' : 'default',
+                                    aspectRatio: '1',
+                                    minWidth: '48px'
+                                }}
+                                onMouseEnter={(e) => {
+                                    if (hasArtifact) {
+                                        e.currentTarget.style.background = '#e0ebff';
+                                        e.currentTarget.style.borderColor = '#1e3a8a';
+                                        e.currentTarget.style.transform = 'scale(1.15)';
+                                        e.currentTarget.style.boxShadow = '0 4px 12px rgba(0, 51, 73, 0.2)';
+                                    }
+                                }}
+                                onMouseLeave={(e) => {
+                                    if (hasArtifact) {
+                                        e.currentTarget.style.background = '#f0f4ff';
+                                        e.currentTarget.style.borderColor = '#003349';
+                                        e.currentTarget.style.transform = 'scale(1)';
+                                        e.currentTarget.style.boxShadow = 'none';
+                                    }
+                                }}
+                                title={label}
+                            >
+                                <span style={{ fontSize: '1.4rem', lineHeight: 1 }}>{emoji}</span>
+                                <span style={{
+                                    fontSize: '0.6rem',
+                                    marginTop: '0.2rem',
+                                    color: hasArtifact ? '#003349' : '#94a3b8',
+                                    fontWeight: '700',
+                                    textAlign: 'center',
+                                    lineHeight: 1
+                                }}>
+                                    {label.split(' ')[0]}
+                                </span>
+                            </a>
+                        );
+                    })}
+                </div>
             </div>
 
             {/* Estado si no hay artefactos */}

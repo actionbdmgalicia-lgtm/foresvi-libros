@@ -12,6 +12,7 @@ const BORDER = '#e2e8f0';
 
 export default function PyramidaConocimiento({ piramidaTemas, libros, selectedTema, onSelectTema }) {
     const [viewMode, setViewMode] = useState('table'); // 'table' | 'search'
+    const [contentMode, setContentMode] = useState('books'); // 'books' | 'content'
 
     // Agrupar libros por tema de pirámide
     const librosPorTema = useMemo(() => {
@@ -30,6 +31,39 @@ export default function PyramidaConocimiento({ piramidaTemas, libros, selectedTe
     const totalLibrosAsignados = useMemo(() => {
         return Object.values(librosPorTema).reduce((sum, arr) => sum + arr.length, 0);
     }, [librosPorTema]);
+
+    // Agrupar libros por tipo de contenido
+    const librosPorContenido = useMemo(() => {
+        const grouped = {
+            video: [],
+            audio: [],
+            infografía: [],
+            documento: [],
+            presentación: []
+        };
+
+        librosDelTema.forEach(libro => {
+            const artifacts = libro.artifactDownloads || {};
+
+            if (Object.values(artifacts).some(d => d.fileName?.endsWith('.mp4'))) {
+                grouped.video.push(libro);
+            }
+            if (Object.values(artifacts).some(d => d.fileName?.endsWith('.mp3'))) {
+                grouped.audio.push(libro);
+            }
+            if (Object.values(artifacts).some(d => d.fileName?.endsWith('.png'))) {
+                grouped.infografía.push(libro);
+            }
+            if (Object.values(artifacts).some(d => d.fileName?.endsWith('.docx') || d.fileName?.endsWith('.md'))) {
+                grouped.documento.push(libro);
+            }
+            if (Object.values(artifacts).some(d => d.fileName?.endsWith('.pdf') || d.fileName?.endsWith('.pptx'))) {
+                grouped.presentación.push(libro);
+            }
+        });
+
+        return grouped;
+    }, [librosDelTema]);
 
     return (
         <div style={{ minHeight: '70vh' }}>
@@ -310,41 +344,91 @@ export default function PyramidaConocimiento({ piramidaTemas, libros, selectedTe
                                 marginBottom: '1.5rem',
                                 boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
                             }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.75rem' }}>
-                                    <div style={{
-                                        width: '42px',
-                                        height: '42px',
-                                        borderRadius: '10px',
-                                        background: RED,
-                                        color: WHITE,
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        fontSize: '1rem',
-                                        fontWeight: 800,
-                                        boxShadow: '0 2px 8px rgba(226,84,84,0.25)'
-                                    }}>
-                                        {selectedTema.nivel}
-                                    </div>
-                                    <div>
-                                        <h3 style={{
-                                            color: NAVY,
-                                            fontSize: '1.4rem',
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                                        <div style={{
+                                            width: '42px',
+                                            height: '42px',
+                                            borderRadius: '10px',
+                                            background: RED,
+                                            color: WHITE,
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            fontSize: '1rem',
                                             fontWeight: 800,
-                                            margin: 0,
-                                            lineHeight: 1.2
+                                            boxShadow: '0 2px 8px rgba(226,84,84,0.25)'
                                         }}>
-                                            {selectedTema.nombre}
-                                        </h3>
-                                        <p style={{
-                                            color: GRAY,
-                                            fontSize: '0.9rem',
-                                            margin: 0
-                                        }}>
-                                            {selectedTema.descripcion}
-                                        </p>
+                                            {selectedTema.nivel}
+                                        </div>
+                                        <div>
+                                            <h3 style={{
+                                                color: NAVY,
+                                                fontSize: '1.4rem',
+                                                fontWeight: 800,
+                                                margin: 0,
+                                                lineHeight: 1.2
+                                            }}>
+                                                {selectedTema.nombre}
+                                            </h3>
+                                            <p style={{
+                                                color: GRAY,
+                                                fontSize: '0.9rem',
+                                                margin: 0
+                                            }}>
+                                                {selectedTema.descripcion}
+                                            </p>
+                                        </div>
                                     </div>
+
+                                    {/* Toggle Vista por Libros / Contenido */}
+                                    {librosDelTema.length > 0 && (
+                                        <div style={{
+                                            display: 'flex',
+                                            gap: '4px',
+                                            background: LIGHT_BG,
+                                            padding: '4px',
+                                            borderRadius: '8px',
+                                            border: `1px solid ${BORDER}`
+                                        }}>
+                                            <button
+                                                onClick={() => setContentMode('books')}
+                                                style={{
+                                                    padding: '0.4rem 0.8rem',
+                                                    background: contentMode === 'books' ? NAVY : 'transparent',
+                                                    color: contentMode === 'books' ? WHITE : GRAY,
+                                                    border: 'none',
+                                                    borderRadius: '6px',
+                                                    fontSize: '0.8rem',
+                                                    fontWeight: 600,
+                                                    cursor: 'pointer',
+                                                    transition: 'all 0.2s'
+                                                }}
+                                                title="Ver por libros"
+                                            >
+                                                📚 Libros
+                                            </button>
+                                            <button
+                                                onClick={() => setContentMode('content')}
+                                                style={{
+                                                    padding: '0.4rem 0.8rem',
+                                                    background: contentMode === 'content' ? NAVY : 'transparent',
+                                                    color: contentMode === 'content' ? WHITE : GRAY,
+                                                    border: 'none',
+                                                    borderRadius: '6px',
+                                                    fontSize: '0.8rem',
+                                                    fontWeight: 600,
+                                                    cursor: 'pointer',
+                                                    transition: 'all 0.2s'
+                                                }}
+                                                title="Ver por tipo de contenido"
+                                            >
+                                                📦 Contenidos
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
+
                                 <div style={{
                                     display: 'flex',
                                     alignItems: 'center',
@@ -364,20 +448,153 @@ export default function PyramidaConocimiento({ piramidaTemas, libros, selectedTe
                                 </div>
                             </div>
 
-                            {/* Grid de libros */}
+                            {/* Contenido según modo seleccionado */}
                             {librosDelTema.length > 0 ? (
-                                <div style={{
-                                    display: 'grid',
-                                    gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
-                                    gap: '1.25rem'
-                                }}>
-                                    {librosDelTema.map(libro => (
-                                        <BookResultCard
-                                            key={libro.id}
-                                            libro={libro}
-                                        />
-                                    ))}
-                                </div>
+                                <>
+                                    {contentMode === 'books' ? (
+                                        /* VISTA POR LIBROS */
+                                        <div style={{
+                                            display: 'grid',
+                                            gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+                                            gap: '1.25rem'
+                                        }}>
+                                            {librosDelTema.map(libro => (
+                                                <BookResultCard
+                                                    key={libro.id}
+                                                    libro={libro}
+                                                />
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        /* VISTA POR TIPO DE CONTENIDO */
+                                        <div style={{
+                                            display: 'grid',
+                                            gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+                                            gap: '1.5rem'
+                                        }}>
+                                            {['video', 'audio', 'infografía', 'documento', 'presentación'].map(tipo => {
+                                                const librosDeEsteContenido = librosPorContenido[tipo];
+                                                const iconos = {
+                                                    video: '🎬',
+                                                    audio: '🎧',
+                                                    infografía: '🧩',
+                                                    documento: '📄',
+                                                    presentación: '📊'
+                                                };
+                                                const colores = {
+                                                    video: '#ef4444',
+                                                    audio: '#f59e0b',
+                                                    infografía: '#8b5cf6',
+                                                    documento: '#3b82f6',
+                                                    presentación: '#ec4899'
+                                                };
+
+                                                return (
+                                                    <div
+                                                        key={tipo}
+                                                        style={{
+                                                            background: WHITE,
+                                                            borderRadius: '12px',
+                                                            border: `1px solid ${BORDER}`,
+                                                            overflow: 'hidden',
+                                                            transition: 'all 0.3s'
+                                                        }}
+                                                    >
+                                                        {/* Encabezado por tipo */}
+                                                        <div style={{
+                                                            background: colores[tipo],
+                                                            color: WHITE,
+                                                            padding: '1rem',
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            gap: '0.75rem'
+                                                        }}>
+                                                            <span style={{ fontSize: '1.5rem' }}>{iconos[tipo]}</span>
+                                                            <div style={{ flex: 1 }}>
+                                                                <p style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, textTransform: 'capitalize' }}>
+                                                                    {tipo}
+                                                                </p>
+                                                                <p style={{ margin: 0, fontSize: '0.75rem', opacity: 0.9 }}>
+                                                                    {librosDeEsteContenido.length} {librosDeEsteContenido.length === 1 ? 'recurso' : 'recursos'}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Lista de libros */}
+                                                        {librosDeEsteContenido.length > 0 ? (
+                                                            <div style={{ padding: '1rem', maxHeight: '400px', overflowY: 'auto' }}>
+                                                                {librosDeEsteContenido.map(libro => (
+                                                                    <div
+                                                                        key={libro.id}
+                                                                        style={{
+                                                                            padding: '0.75rem',
+                                                                            marginBottom: '0.5rem',
+                                                                            background: LIGHT_BG,
+                                                                            borderRadius: '8px',
+                                                                            fontSize: '0.9rem',
+                                                                            borderLeft: `3px solid ${colores[tipo]}`,
+                                                                            cursor: 'pointer',
+                                                                            transition: 'all 0.2s',
+                                                                            display: 'flex',
+                                                                            justifyContent: 'space-between',
+                                                                            alignItems: 'center'
+                                                                        }}
+                                                                        onMouseEnter={(e) => {
+                                                                            e.currentTarget.style.background = 'white';
+                                                                            e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
+                                                                        }}
+                                                                        onMouseLeave={(e) => {
+                                                                            e.currentTarget.style.background = LIGHT_BG;
+                                                                            e.currentTarget.style.boxShadow = 'none';
+                                                                        }}
+                                                                    >
+                                                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                                                            <p style={{
+                                                                                margin: 0,
+                                                                                fontWeight: 600,
+                                                                                color: NAVY,
+                                                                                whiteSpace: 'nowrap',
+                                                                                overflow: 'hidden',
+                                                                                textOverflow: 'ellipsis'
+                                                                            }}>
+                                                                                {libro.title}
+                                                                            </p>
+                                                                        </div>
+                                                                        <span style={{
+                                                                            display: 'inline-flex',
+                                                                            alignItems: 'center',
+                                                                            justifyContent: 'center',
+                                                                            minWidth: '24px',
+                                                                            height: '24px',
+                                                                            borderRadius: '12px',
+                                                                            background: colores[tipo],
+                                                                            color: WHITE,
+                                                                            fontSize: '0.7rem',
+                                                                            fontWeight: 700,
+                                                                            marginLeft: '0.5rem',
+                                                                            flexShrink: 0
+                                                                        }}>
+                                                                            {iconos[tipo]}
+                                                                        </span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        ) : (
+                                                            <div style={{
+                                                                padding: '2rem 1rem',
+                                                                textAlign: 'center',
+                                                                color: GRAY,
+                                                                fontSize: '0.9rem'
+                                                            }}>
+                                                                No hay {tipo}s
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </>
                             ) : (
                                 <div style={{
                                     textAlign: 'center',

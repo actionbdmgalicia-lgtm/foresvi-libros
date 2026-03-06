@@ -31,15 +31,24 @@ export default function AdvancedSearch({ libros = [] }) {
 
     // Búsqueda inteligente
     const resultados = useMemo(() => {
+        // Normalizar búsqueda: remover # si existe
+        const normalizeHashtag = (tag) => tag.toLowerCase().replace(/^#/, '');
+        const searchNormalized = normalizeHashtag(searchText);
+
         return libros.filter(libro => {
+            // Búsqueda por texto o hashtag (funciona con o sin #)
             const matchesText =
                 !searchText ||
                 libro.title.toLowerCase().includes(searchText.toLowerCase()) ||
-                libro.hashtags?.some(h => h.toLowerCase().includes(searchText.toLowerCase()));
+                libro.hashtags?.some(h => normalizeHashtag(h).includes(searchNormalized));
 
+            // Filtro de hashtags seleccionados (con normalización)
             const matchesHashtags =
                 selectedHashtags.length === 0 ||
-                selectedHashtags.every(h => libro.hashtags?.includes(h));
+                selectedHashtags.every(selectedTag => {
+                    const selectedNormalized = normalizeHashtag(selectedTag);
+                    return libro.hashtags?.some(h => normalizeHashtag(h) === selectedNormalized);
+                });
 
             const matchesTema = !selectedTema || libro.tema_piramide === selectedTema;
             const matchesLevel = !selectedLevel || libro.level === selectedLevel;
