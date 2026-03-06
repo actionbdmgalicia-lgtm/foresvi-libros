@@ -336,12 +336,19 @@ const AdminDashboard = () => {
 
         try {
             // Create/Update Book entry
+            const tema = selectedTemaEdicion ? parseInt(selectedTemaEdicion) || parseFloat(selectedTemaEdicion) : null;
+            const autogenHashtags = hashtagsEdicion.trim()
+                ? hashtagsEdicion.split(',').map(h => h.trim())
+                : generateHashtags(title, selectedVideo?.summary || '', tema);
+
             const newBook = {
                 title: title,
                 generationConfig: generationConfig,
                 orchestrationStatus: 'initializing',
                 createdAt: new Date(),
                 acceptedDate: new Date().toISOString(),
+                tema_piramide: tema,
+                hashtags: autogenHashtags,
                 // Retain existing fields if updating
                 ...selectedVideo
             };
@@ -862,6 +869,8 @@ const AdminDashboard = () => {
         setSelectedTopic(video.topicId || (topics[0]?.id || ''));
         setSelectedLevel(video.level || 'Iniciación');
         setIsVisible(video.isVisible !== undefined ? video.isVisible : true);
+        setSelectedTemaEdicion(video.tema_piramide || '');
+        setHashtagsEdicion((video.hashtags || []).join(', '));
     };
 
     const resetProcessing = () => {
@@ -877,6 +886,8 @@ const AdminDashboard = () => {
         setSelectedTopic(topics[0]?.id || '');
         setSelectedLevel('Iniciación');
         setOrchestrationStatus('idle');
+        setSelectedTemaEdicion('');
+        setHashtagsEdicion('');
     };
 
     const handleReject = async (video) => {

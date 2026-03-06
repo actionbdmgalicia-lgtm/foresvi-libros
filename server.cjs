@@ -1474,46 +1474,55 @@ app.post('/api/process-artifacts/:bookId', async (req, res) => {
                                     }
                                 }
 
-                                const presFileName = `${safeTitle}.pptx`;
+                                // Generate PPTX first
+                                const presPptxFileName = `${safeTitle}-temp.pptx`;
+                                const presPptxPath = path.join(folderPath, presPptxFileName);
+                                await pres.writeFile({ fileName: presPptxPath });
+
+                                // Convert to PDF (NotebookLM native format)
+                                const presFileName = `${safeTitle}.pdf`;
                                 const presPath = path.join(folderPath, presFileName);
-                                await pres.writeFile({ fileName: presPath });
+                                const presDir = path.dirname(presPptxPath);
 
-                                if (fs.existsSync(presPath)) {
-                                    const stats = fs.statSync(presPath);
-                                    results['presentation'] = {
-                                        status: 'downloaded',
-                                        path: presPath,
-                                        fileName: presFileName,
-                                        size: stats.size,
-                                        note_id: note.id,
-                                        title: noteTitle
-                                    };
-                                    console.log(`[Process Artifacts] ✅ Presentation saved as PPTX: ${presFileName} (${slides.length} slides, ${(stats.size / 1024).toFixed(0)} KB)`);
-
-                                    // Try to convert PPTX to PDF
-                                    const presDir = path.dirname(presPath);
-                                    const presBaseName = path.basename(presPath, '.pptx');
-                                    const presPdfPath = path.join(presDir, presBaseName + '.pdf');
-                                    try {
-                                        await new Promise((resolve, reject) => {
-                                            execFile('libreoffice', ['--headless', '--convert-to', 'pdf', '--outdir', presDir, presPath], { timeout: 60000 }, (err) => {
-                                                if (err) reject(err);
-                                                else resolve();
-                                            });
+                                try {
+                                    await new Promise((resolve, reject) => {
+                                        execFile('libreoffice', ['--headless', '--convert-to', 'pdf', '--outdir', presDir, presPptxPath], { timeout: 60000 }, (err) => {
+                                            if (err) reject(err);
+                                            else resolve();
                                         });
-                                        if (fs.existsSync(presPdfPath)) {
-                                            const pdfStats = fs.statSync(presPdfPath);
-                                            results['presentation_pdf'] = {
-                                                status: 'downloaded',
-                                                path: presPdfPath,
-                                                fileName: presBaseName + '.pdf',
-                                                size: pdfStats.size,
-                                                title: noteTitle
-                                            };
-                                            console.log(`[Process Artifacts] ✅ Presentation converted to PDF: ${presBaseName}.pdf (${(pdfStats.size / 1024).toFixed(0)} KB)`);
-                                        }
-                                    } catch (pdfErr) {
-                                        console.warn(`[Process Artifacts] ⚠️ PDF conversion failed (libreoffice not available): ${pdfErr.message}`);
+                                    });
+
+                                    // Clean up temporary PPTX
+                                    fs.unlinkSync(presPptxPath);
+
+                                    if (fs.existsSync(presPath)) {
+                                        const stats = fs.statSync(presPath);
+                                        results['presentation'] = {
+                                            status: 'downloaded',
+                                            path: presPath,
+                                            fileName: presFileName,
+                                            size: stats.size,
+                                            note_id: note.id,
+                                            title: noteTitle
+                                        };
+                                        console.log(`[Process Artifacts] ✅ Presentation exported as PDF: ${presFileName} (${slides.length} slides, ${(stats.size / 1024).toFixed(0)} KB)`);
+                                    } else {
+                                        throw new Error('PDF file not created after conversion');
+                                    }
+                                } catch (pdfErr) {
+                                    console.warn(`[Process Artifacts] ⚠️ PDF conversion failed: ${pdfErr.message}. Keeping PPTX as fallback.`);
+                                    // Fallback: use PPTX if PDF conversion fails
+                                    if (fs.existsSync(presPptxPath)) {
+                                        const stats = fs.statSync(presPptxPath);
+                                        results['presentation'] = {
+                                            status: 'downloaded',
+                                            path: presPptxPath,
+                                            fileName: presPptxFileName.replace('-temp', '').replace('.pptx', '.pptx'),
+                                            size: stats.size,
+                                            note_id: note.id,
+                                            title: noteTitle
+                                        };
+                                        console.log(`[Process Artifacts] ℹ️ Using PPTX fallback (PDF conversion unavailable)`);
                                     }
                                 }
                             } catch (pptxErr) {

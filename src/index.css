@@ -213,3 +213,215 @@ p {
 .animate-fade-in {
   animation: fadeIn 0.8s ease-out forwards;
 }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   KNOWLEDGE PYRAMID STYLES
+   ════════════════════════════════════════════════════════════════════════════ */
+
+.piramide-svg {
+  width: 100%;
+  cursor: pointer;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
+}
+
+.piramide-polygon {
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.piramide-polygon:hover {
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.2));
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   BOOK RESULT CARD STYLES
+   ════════════════════════════════════════════════════════════════════════════ */
+
+.book-card {
+  background: white;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  padding: 1.5rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.book-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 4px 12px rgba(0, 51, 73, 0.1);
+  transform: translateY(-2px);
+}
+
+.book-card-title {
+  color: #0f172a;
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+  line-height: 1.4;
+}
+
+.book-card-badge {
+  display: inline-block;
+  padding: 0.35rem 0.9rem;
+  background: linear-gradient(135deg, #E25454 0%, #c43131 100%);
+  color: white;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  margin-bottom: 0.75rem;
+  font-weight: 600;
+  box-shadow: 0 2px 4px rgba(226, 84, 84, 0.2);
+}
+
+.book-card-hashtags {
+  margin-bottom: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.book-card-hashtag {
+  padding: 0.3rem 0.7rem;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  color: #475569;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.book-card-hashtag:hover {
+  background: #e2e8f0;
+  border-color: #94a3b8;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   ARTIFACT BUTTON STYLES
+   ════════════════════════════════════════════════════════════════════════════ */
+
+.artifact-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem;
+  background: #f0f4ff;
+  border: 1.5px solid #003349;
+  border-radius: 8px;
+  text-decoration: none;
+  opacity: 1;
+  pointer-events: auto;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.artifact-button:hover {
+  background: #e0ebff;
+  border-color: #1e3a8a;
+  transform: scale(1.05);
+}
+
+.artifact-button-disabled {
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  opacity: 0.4;
+  pointer-events: none;
+  cursor: default;
+}
+
+.artifact-button-icon {
+  font-size: 1.2rem;
+}
+
+.artifact-button-label {
+  font-size: 0.65rem;
+  margin-top: 0.25rem;
+  color: #003349;
+  font-weight: 600;
+  text-align: center;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   ADVANCED SEARCH STYLES
+   ════════════════════════════════════════════════════════════════════════════ */
+
+.search-panel {
+  background: white;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  padding: 2rem;
+  margin-bottom: 2rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.search-input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  font-size: 1rem;
+  border: 2px solid #e2e8f0;
+  border-radius: 8px;
+  transition: all 0.2s;
+  box-sizing: border-box;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: #003349;
+  box-shadow: 0 0 0 3px rgba(0, 51, 73, 0.1);
+}
+
+.search-hashtag-chip {
+  display: inline-block;
+  padding: 0.5rem 0.9rem;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  margin: 0.25rem;
+}
+
+.search-hashtag-chip:hover {
+  transform: scale(1.05);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.search-hashtag-chip.selected {
+  background: #003349;
+  color: white;
+  border-color: #003349;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   RESPONSIVE ADJUSTMENTS
+   ════════════════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 768px) {
+  .piramide-polygon {
+    stroke-width: 2px;
+  }
+
+  .book-card {
+    padding: 1rem;
+  }
+
+  .book-card-title {
+    font-size: 0.95rem;
+  }
+
+  .artifact-button {
+    padding: 0.5rem;
+  }
+
+  .artifact-button-icon {
+    font-size: 1rem;
+  }
+
+  .artifact-button-label {
+    font-size: 0.6rem;
+  }
+}
