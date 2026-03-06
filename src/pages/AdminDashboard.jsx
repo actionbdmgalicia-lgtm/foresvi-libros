@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactPlayer from 'react-player';
-// Version: 1.2.0 - Build: 2026-03-05 - Added: Floating Progress Widget + FORESVI colors
+// Version: 1.3.0 - Build: 2026-03-06 - Added: Knowledge Pyramid + Advanced Search + Auto Hashtags
 import GenerationConfigPanel from '../components/GenerationConfigPanel';
 import GenerationProgressWidget from '../components/GenerationProgressWidget';
+import PyramidaConocimiento from '../components/PyramidaConocimiento';
+import AdvancedSearch from '../components/AdvancedSearch';
 import { db } from '../firebase';
 import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc, setDoc, query, where, orderBy, limit, deleteField, onSnapshot } from "firebase/firestore";
 
@@ -133,6 +135,55 @@ const searchYouTube = async (query, filters = {}, pageToken = '') => {
     }
 };
 
+// ════════════════════════════════════════════════════════════════════════════
+// CONSTANTE: PIRÁMIDE DE CONOCIMIENTO FORESVI
+// ════════════════════════════════════════════════════════════════════════════
+const PIRAMIDE_TEMAS = [
+    { nivel: 1, nombre: 'Destino', descripcion: 'Visión y propósito del negocio' },
+    { nivel: 2, nombre: 'Dinero', descripcion: 'Gestión financiera y presupuestos' },
+    { nivel: 3, nombre: 'Tiempo', descripcion: 'Planificación y gestión del tiempo' },
+    { nivel: 4, nombre: 'Servicio', descripcion: 'Calidad y atención al cliente' },
+    { nivel: 5.1, nombre: 'Marketing', descripcion: 'Estrategias de marketing y promoción' },
+    { nivel: 5.2, nombre: 'Ventas', descripcion: 'Técnicas de ventas y conversión' },
+    { nivel: 6, nombre: 'Sistematizando', descripcion: 'Procesos y automatización' },
+    { nivel: 7, nombre: 'Equipo', descripcion: 'Gestión de recursos humanos' },
+    { nivel: 8, nombre: 'Equipo Avanzado', descripcion: 'Desarrollo avanzado de equipo' },
+    { nivel: 9, nombre: 'Sinergia', descripcion: 'Integración y sinergia empresarial' }
+];
+
+// ════════════════════════════════════════════════════════════════════════════
+// FUNCIÓN: Generar Hashtags Automáticamente
+// ════════════════════════════════════════════════════════════════════════════
+const generateHashtags = (title, summary = '', temaPiramide = null) => {
+    const combined = (title + ' ' + summary).toLowerCase();
+    const hashtags = new Set();
+
+    // Extraer palabras clave (palabras > 4 caracteres)
+    const words = combined
+        .split(/\s+/)
+        .filter(w => w.length > 4 && !['foresvi', 'libro', 'libros'].includes(w))
+        .slice(0, 8);
+
+    words.forEach(w => {
+        const clean = w.replace(/[^a-záéíóúñ0-9]/g, '');
+        if (clean.length > 3) hashtags.add('#' + clean);
+    });
+
+    // Agregar hashtags temáticos basados en tema de pirámide
+    if (temaPiramide) {
+        const tema = PIRAMIDE_TEMAS.find(p => p.nivel === temaPiramide);
+        if (tema) {
+            const temaName = tema.nombre.replace(/\s+/g, '');
+            hashtags.add('#' + temaName.toLowerCase());
+        }
+    }
+
+    // Hashtag corporativo
+    hashtags.add('#foresvi');
+
+    return Array.from(hashtags);
+};
+
 const AdminDashboard = () => {
     // State
     const [searchQuery, setSearchQuery] = useState('');
@@ -237,6 +288,11 @@ const AdminDashboard = () => {
     // Debug / Logs State
     const [viewingLogsFor, setViewingLogsFor] = useState(null); // video object
     const [liveLogs, setLiveLogs] = useState([]);
+
+    // Base de Conocimiento State (Pirámide y Búsqueda)
+    const [selectedPiramidaTema, setSelectedPiramidaTema] = useState(null);
+    const [selectedTemaEdicion, setSelectedTemaEdicion] = useState('');
+    const [hashtagsEdicion, setHashtagsEdicion] = useState('');
 
     // Orchestrated Generation Launch
     const handleLaunchGeneration = async () => {
@@ -984,7 +1040,8 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                     </div>
                     <div style={{ display: 'flex', gap: '0.5rem', background: 'white', padding: '4px', borderRadius: '12px', border: '1px solid var(--border-subtle)' }}>
                         <button onClick={() => { setActiveTab('search'); setSelectedVideo(null); resetProcessing(); }} className={`btn ${activeTab === 'search' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'search' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'search' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>🔍 Nuevo Libro</button>
-                        <button onClick={() => { setActiveTab('database'); setSelectedVideo(null); }} className={`btn ${activeTab === 'database' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'database' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'database' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>📚 Biblioteca</button>
+                        <button onClick={() => { setActiveTab('database'); setSelectedVideo(null); }} className={`btn ${activeTab === 'database' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'database' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'database' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>📁 Archivo</button>
+                        <button onClick={() => { setActiveTab('knowledge'); setSelectedVideo(null); }} className={`btn ${activeTab === 'knowledge' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'knowledge' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'knowledge' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>🧠 Base de Conocimiento</button>
                         <button onClick={() => setActiveTab('config')} className={`btn ${activeTab === 'config' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'config' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'config' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>⚙️ Ajustes</button>
                     </div>
                 </div>
@@ -1820,6 +1877,25 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                     );
                 })()}
 
+                {/* PESTAÑA 3: BASE DE CONOCIMIENTO FORESVI */}
+                {activeTab === 'knowledge' && (
+                    <div style={{ minHeight: '80vh' }}>
+                        <PyramidaConocimiento
+                            piramidaTemas={PIRAMIDE_TEMAS}
+                            libros={acceptedVideos}
+                            selectedTema={selectedPiramidaTema}
+                            onSelectTema={setSelectedPiramidaTema}
+                        />
+                    </div>
+                )}
+
+                {/* PESTAÑA 4: BÚSQUEDA AVANZADA (Alternativa en la misma pestaña) */}
+                {activeTab === 'search_advanced' && (
+                    <div style={{ minHeight: '80vh' }}>
+                        <AdvancedSearch libros={acceptedVideos} />
+                    </div>
+                )}
+
                 {
                     activeTab === 'config' && (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
@@ -1966,8 +2042,37 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                                                 <option>Experto</option>
                                             </select>
                                         </div>
+                                        <div>
+                                            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 'bold', marginBottom: '0.3rem', color: '#475569' }}>🏛️ Tema de Pirámide</label>
+                                            <select
+                                                value={selectedTemaEdicion}
+                                                onChange={(e) => setSelectedTemaEdicion(e.target.value)}
+                                                style={{ width: '100%', padding: '0.6rem', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '0.9rem' }}
+                                            >
+                                                <option value="">Seleccionar Tema...</option>
+                                                {PIRAMIDE_TEMAS.map(t => <option key={t.nivel} value={t.nivel}>{t.nombre}</option>)}
+                                            </select>
+                                        </div>
                                     </div>
 
+                                    {/* HASHTAGS FIELD */}
+                                    <div style={{ marginTop: '1rem' }}>
+                                        <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 'bold', marginBottom: '0.3rem', color: '#475569' }}>#️⃣ Hashtags (separados por comas)</label>
+                                        <textarea
+                                            value={hashtagsEdicion}
+                                            onChange={(e) => setHashtagsEdicion(e.target.value)}
+                                            placeholder="#marketing, #ventas, #foresvi"
+                                            style={{
+                                                width: '100%',
+                                                padding: '0.6rem',
+                                                borderRadius: '8px',
+                                                border: '1px solid #cbd5e1',
+                                                fontSize: '0.9rem',
+                                                minHeight: '70px',
+                                                fontFamily: 'inherit'
+                                            }}
+                                        />
+                                    </div>
 
                                     {/* DRIVE CONTENT VIEWER - For completed books */}
                                     {(orchestrationStatus === 'completed' || orchestrationStatus === 'drive_synced') && selectedVideo.driveFolderPath && (
