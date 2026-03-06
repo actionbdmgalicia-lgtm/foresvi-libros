@@ -1,24 +1,58 @@
+console.log("[BOOT] Cargando sistema...");
 const express = require('express');
+console.log("[BOOT] Express ok");
 const cors = require('cors');
+console.log("[BOOT] Cors ok");
 const { spawn, execFile } = require('child_process');
-const { google } = require('googleapis');
+
+// Lazy load heavy libraries to speed up boot on cloud drives
+const lazyRequire = (moduleName, prop) => {
+    let _mod = null;
+    return new Proxy({}, {
+        get: (target, p) => {
+            if (!_mod) {
+                console.log(`[BOOT] Lazy loading ${moduleName}...`);
+                const required = require(moduleName);
+                _mod = prop ? required[prop] : required;
+                console.log(`[BOOT] ${moduleName} loaded.`);
+            }
+            return _mod[p];
+        }
+    });
+};
+
+const google = lazyRequire('googleapis', 'google');
+const admin = lazyRequire('firebase-admin');
+const axios = lazyRequire('axios');
+
 const path = require('path');
 const fs = require('fs');
-const axios = require('axios');
-const admin = require('firebase-admin');
-const ffmpeg = require('fluent-ffmpeg');
-const ffmpegPath = require('ffmpeg-static');
+const multer = require('multer');
 
-// Configure ffmpeg
-if (ffmpegPath) {
-    ffmpeg.setFfmpegPath(ffmpegPath);
-    console.log(`[FFmpeg] Path set to: ${ffmpegPath}`);
-} else {
-    console.warn(`[FFmpeg] NOT FOUND. Video generation will fail.`);
-}
+// Configure multer for file uploads (PDFs, EPUBs)
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+const upload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => cb(null, uploadsDir),
+        filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
+    }),
+    limits: { fileSize: 100 * 1024 * 1024 }, // 100MB max
+    fileFilter: (req, file, cb) => {
+        const allowed = ['.pdf', '.epub', '.txt', '.doc', '.docx'];
+        const ext = path.extname(file.originalname).toLowerCase();
+        if (allowed.includes(ext)) cb(null, true);
+        else cb(new Error(`Tipo de archivo no soportado: ${ext}. Permitidos: ${allowed.join(', ')}`));
+    }
+});
+
+// FFmpeg removed
+
+console.log("[BOOT] Core modules ok");
 
 const app = express();
 const PORT = 3001;
+
 
 app.use(cors());
 app.use(express.json());
@@ -41,6 +75,25 @@ app.use((req, res, next) => {
 
 // Path to the MCP executable (Validated in previous steps)
 const MCP_PATH = "/Users/maccuatro/.local/bin/notebooklm-mcp";
+// Path to the nlm CLI tool (for auth checks and re-login)
+const NLM_CLI = "/Users/maccuatro/.local/share/uv/tools/notebooklm-mcp-cli/bin/nlm";
+
+// NotebookLM auth state (updated on startup and on each check)
+let nlmAuthValid = null; // null=unknown, true=ok, false=expired
+
+const checkNLMAuth = () => new Promise((resolve) => {
+    execFile(NLM_CLI, ['notebook', 'list', '--json'], { timeout: 15000 }, (err) => {
+        if (err) {
+            console.warn('[NLM Auth] ⚠️  Autenticación expirada o error de conexión:', err.message.substring(0, 120));
+            nlmAuthValid = false;
+            resolve(false);
+        } else {
+            console.log('[NLM Auth] ✅ NotebookLM conectado correctamente');
+            nlmAuthValid = true;
+            resolve(true);
+        }
+    });
+});
 
 // Initialize Firebase Admin with explicit bucket
 const BUCKET_NAME = 'foresvi-libros.firebasestorage.app';
@@ -130,8 +183,17 @@ class MCPClient {
             env: { ...process.env, PYTHONUNBUFFERED: '1' }
         });
 
+        this.process.stderr.on('data', (data) => {
+            const msg = data.toString();
+            // Only log real errors, ignore info messages on stderr
+            if (!msg.includes('INFO') && !msg.includes('FastMCP') && !msg.includes('Update available')) {
+                console.error(`[MCP STDERR] ${msg}`);
+            }
+            fs.appendFileSync(path.join(__dirname, 'server.log'), `[MCP STDERR] ${msg}\n`);
+        });
+
         this.process.stdout.on('data', (chunk) => this.handleData(chunk));
-        this.process.stderr.on('data', (chunk) => console.error(`[MCP STDERR] ${chunk}`));
+
         this.process.on('close', (code) => {
             console.log(`[MCP] Process exited with code ${code}`);
             this.process = null;
@@ -140,20 +202,23 @@ class MCPClient {
 
         // Initialize Handshake
         this.initPromise = new Promise((resolve, reject) => {
-            // We use specific ID 0 for init to track it easily, although JSON-RPC usually creates new IDs
             const id = this.requestId++;
+            // Register pending request first
             this.pendingRequests.set(id, { resolve, reject, type: 'initialize' });
 
-            this.send({
-                jsonrpc: "2.0",
-                id: id,
-                method: "initialize",
-                params: {
-                    protocolVersion: "2024-11-05",
-                    capabilities: {},
-                    clientInfo: { name: "foresvi-bridge", version: "1.0" }
-                }
-            });
+            // Send initialize AFTER a small delay to let process boot
+            setTimeout(() => {
+                this.send({
+                    jsonrpc: "2.0",
+                    id: id,
+                    method: "initialize",
+                    params: {
+                        protocolVersion: "2024-11-05",
+                        capabilities: {},
+                        clientInfo: { name: "foresvi-bridge", version: "1.0" }
+                    }
+                });
+            }, 1000); // 1s boot time
         }).then(() => {
             console.log("[MCP] Handshake complete. Sending initialized notification.");
             this.send({
@@ -237,19 +302,46 @@ class MCPClient {
 const mcpClient = new MCPClient(MCP_PATH);
 
 // Start immediately to be ready
-mcpClient.start().catch(err => console.error("MCP Init Failed:", err));
-
-const runMCPTool = async (toolName, args) => {
-    console.log(`[MCP CALL] ${toolName} with args: ${JSON.stringify(args).substring(0, 100)}...`);
+(async () => {
     try {
-        return await mcpClient.callTool(toolName, args);
+        await mcpClient.start();
+        console.log("✅ MCP Client Ready");
+        // Check NotebookLM auth on startup
+        const authOk = await checkNLMAuth();
+        if (!authOk) {
+            console.error("═══════════════════════════════════════════════════════");
+            console.error("⚠️  NOTEBOOKLM AUTH EXPIRADA — el sistema no podrá");
+            console.error("    crear cuadernos. Ejecuta en terminal:");
+            console.error(`    ${NLM_CLI} login`);
+            console.error("═══════════════════════════════════════════════════════");
+        }
+    } catch (e) {
+        console.error("⚠️ MCP Init Failed:", e.message);
+    }
+})();
+
+const runMCPTool = async (toolName, args, timeoutMs = 180000) => {
+    console.log(`[MCP CALL] ${toolName} with args: ${JSON.stringify(args).substring(0, 100)}...`);
+
+    const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`MCP Timeout: ${toolName} took too long (> ${timeoutMs}ms)`)), timeoutMs)
+    );
+
+    try {
+        return await Promise.race([
+            mcpClient.callTool(toolName, args),
+            timeoutPromise
+        ]);
     } catch (e) {
         console.error(`[MCP CALL FAILED] ${toolName}: ${e.message}`);
         // If broken pipe, restart?
         if (e.message.includes('not running') || e.message.includes('EPIPE')) {
             console.log("Restarting MCP...");
             await mcpClient.start();
-            return await mcpClient.callTool(toolName, args);
+            return await Promise.race([
+                mcpClient.callTool(toolName, args),
+                timeoutPromise
+            ]);
         }
         throw e;
     }
@@ -273,6 +365,32 @@ app.post('/api/refresh-auth', async (req, res) => {
         console.error('[Refresh Auth] Error:', e.message);
         res.status(500).json({ error: e.message });
     }
+});
+
+// NLM AUTH STATUS
+app.get('/api/nlm-status', async (req, res) => {
+    const ok = await checkNLMAuth();
+    res.json({
+        connected: ok,
+        message: ok
+            ? '✅ NotebookLM conectado'
+            : '❌ Sesión expirada — ejecuta: nlm login'
+    });
+});
+
+// NLM RE-LOGIN (opens Terminal with nlm login command)
+app.post('/api/nlm-relogin', (req, res) => {
+    console.log('[NLM Relogin] Abriendo terminal para re-autenticación...');
+    const { exec } = require('child_process');
+    const cmd = `osascript -e 'tell application "Terminal" to do script "${NLM_CLI} login"'`;
+    exec(cmd, (err) => {
+        if (err) {
+            console.error('[NLM Relogin] Error al abrir terminal:', err.message);
+            return res.status(500).json({ error: err.message });
+        }
+        nlmAuthValid = null; // reset until next check
+        res.json({ success: true, message: 'Terminal abierta. Acepta el permiso en el navegador y luego haz clic en "Verificar conexión".' });
+    });
 });
 
 // LIST MCP TOOLS
@@ -395,30 +513,43 @@ app.post('/api/download-upload-audio/:bookId', async (req, res) => {
             return res.status(404).json({ error: 'No audio URL found' });
         }
 
-        console.log(`[Download Audio] Requesting authenticated download via MCP...`);
+        console.log(`[Download Audio] Requesting authenticated download via MCP download_artifact...`);
 
-        // Use MCP tool to download with authenticated session
-        const downloadResult = await runMCPTool('download_secure_file', { url: audioUrl, expected_type: 'audio' });
-        const downloadData = downloadResult.content ? JSON.parse(downloadResult.content[0].text) : null;
+        // Use MCP download_artifact tool which downloads to a local file
+        const tmpDir = path.join(__dirname, 'tmp_downloads');
+        if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+        const tmpFilePath = path.join(tmpDir, `${bookId}_${Date.now()}.audio`);
 
-        if (!downloadData || downloadData.status !== 'success') {
-            const errorMsg = downloadData?.error || 'MCP download failed';
-            const preview = downloadData?.preview || '';
-            console.error(`[Download Audio] MCP Error: ${errorMsg}`);
-            if (preview) console.error(`[Download Audio] Preview:\n${preview.substring(0, 300)}`);
+        const downloadResult = await runMCPTool('download_artifact', {
+            notebook_id: notebookId,
+            artifact_type: 'audio',
+            output_path: tmpFilePath,
+            artifact_id: artifactId || undefined
+        }, 900000); // 15 mins timeout
+        const downloadText = downloadResult.content ? downloadResult.content[0].text : JSON.stringify(downloadResult);
+        let downloadData = null;
+        try { downloadData = JSON.parse(downloadText); } catch (e) { downloadData = { raw: downloadText }; }
 
+        console.log(`[Download Audio] MCP download_artifact result:`, downloadText.substring(0, 300));
+
+        // Check if file was downloaded
+        if (!fs.existsSync(tmpFilePath)) {
+            console.error(`[Download Audio] File not found at ${tmpFilePath}`);
             return res.status(502).json({
                 error: 'Audio Download Failed',
-                details: errorMsg,
-                hint: 'The audio URL requires Google authentication. MCP tool failed to download it.'
+                details: 'download_artifact did not create the expected file',
+                mcpResult: downloadText.substring(0, 500)
             });
         }
 
-        // Decode base64 audio
-        const audioBuffer = Buffer.from(downloadData.base64_data, 'base64');
-        const contentType = downloadData.content_type || 'audio/mp4';
+        // Read the downloaded file
+        const audioBuffer = fs.readFileSync(tmpFilePath);
+        const contentType = downloadData?.content_type || downloadData?.mime_type || 'audio/mp4';
 
-        console.log(`[Download Audio] Success! Size: ${downloadData.size_bytes} bytes, Type: ${contentType}`);
+        console.log(`[Download Audio] Success! Size: ${audioBuffer.length} bytes, Type: ${contentType}`);
+
+        // Clean up temp file
+        try { fs.unlinkSync(tmpFilePath); } catch (e) { /* ignore cleanup errors */ }
 
         // Detect format for valid audio
         let extension = 'm4a';
@@ -775,8 +906,9 @@ app.post('/api/generate', async (req, res) => {
             // Description (Context)
             if (description) {
                 log("Adding style guide...");
-                await runMCPTool('notebook_add_text', {
+                await runMCPTool('source_add', {
                     notebook_id: notebookId,
+                    source_type: 'text',
                     title: "GUÍA DE ESTILO Y CONTEXTO",
                     text: `CONTEXTO:\n${description}\n\nREGLAS:\n- Priorizar datos técnicos.\n- Tono experto.`
                 });
@@ -791,7 +923,7 @@ app.post('/api/generate', async (req, res) => {
                     const url = req.body.sources[i];
                     try {
                         log(`Adding URL (${i + 1}/${total}): ${url}`);
-                        await runMCPTool('notebook_add_url', { notebook_id: notebookId, url });
+                        await runMCPTool('source_add', { notebook_id: notebookId, source_type: 'url', url });
                         addedCount++;
                         // Update progress within this step
                         jobs[jobId].progress = 50 + Math.floor((i / total) * 30); // 50 -> 80
@@ -808,8 +940,9 @@ app.post('/api/generate', async (req, res) => {
                 log("Generating Audio Overview...");
                 try {
                     // Pass confirm: true to skip the confirmation step
-                    const audioRes = await runMCPTool('audio_overview_create', {
+                    const audioRes = await runMCPTool('studio_create', {
                         notebook_id: notebookId,
+                        artifact_type: 'audio',
                         confirm: true
                     });
 
@@ -903,11 +1036,6 @@ if (!fs.existsSync(publicExportsDir)) {
 // Serve static exports via Express directly (fallback if Vite doesn't catch new files)
 app.use('/exports', express.static(publicExportsDir));
 
-// Helper: Check YouTube Creds
-const hasYouTubeCreds = () => {
-    return fs.existsSync(path.join(__dirname, 'youtube-oauth-client.json')) &&
-        fs.existsSync(path.join(__dirname, 'youtube-token.json'));
-};
 
 const PROMPTS = {
     audio: (c, t) => `Genera un AUDIO con las siguientes características:
@@ -949,154 +1077,21 @@ Descripción:
 ${c.infografia.descripcion}`
 };
 
-app.get('/api/youtube/status', (req, res) => {
-    res.json({
-        ready: hasYouTubeCreds(),
-        driveEnabled: true,
-        featureFlag: true // Now uses Drive instead of YouTube upload
-    });
-});
-
-app.post('/api/youtube/upload', async (req, res) => {
-    const { bookId } = req.body;
-
-    if (!hasYouTubeCreds()) {
-        return res.status(503).json({ success: false, error: 'Missing YouTube credentials' });
-    }
-
-    try {
-        console.log(`[YouTube] Starting upload for Book: ${bookId}`);
-        const db = admin.firestore();
-        const docRef = db.collection('books').doc(bookId);
-        const doc = await docRef.get();
-        const data = doc.data();
-
-        if (!data || !data.localVideoUrl) {
-            return res.status(404).json({ success: false, error: 'Video not found' });
-        }
-
-        // Resolve absolute path
-        // data.localVideoUrl is like "/exports/bookId/vid.mp4"
-        const relativePath = data.localVideoUrl.replace(/^\/exports\//, '');
-        const videoPath = path.join(publicExportsDir, relativePath);
-
-        if (!fs.existsSync(videoPath)) {
-            return res.status(404).json({ success: false, error: `File not found on server: ${videoPath}` });
-        }
-
-        // Authenticate
-        const creds = JSON.parse(fs.readFileSync(path.join(__dirname, 'youtube-oauth-client.json')));
-        const tokens = JSON.parse(fs.readFileSync(path.join(__dirname, 'youtube-token.json')));
-        const key = creds.installed || creds.web;
-
-        const oauth2Client = new google.auth.OAuth2(key.client_id, key.client_secret, key.redirect_uris[0]);
-        oauth2Client.setCredentials(tokens);
-
-        const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
-
-        // Upload
-        const fileSize = fs.statSync(videoPath).size;
-        console.log(`[YouTube] Uploading ${videoPath} (${(fileSize / 1024 / 1024).toFixed(2)} MB)...`);
-
-        const resUpload = await youtube.videos.insert({
-            part: 'snippet,status',
-            requestBody: {
-                snippet: {
-                    title: `Resumen: ${data.title || 'Libro sin título'}`,
-                    description: `Resumen generado por IA para Foresvi.\n\nContenido generado con NotebookLM.\n\n${data.subtitulo || ''}`,
-                    tags: ['Foresvi', 'Resumen', 'IA', 'Educación'],
-                    categoryId: '27' // Education
-                },
-                status: {
-                    privacyStatus: 'unlisted', // No listado
-                    selfDeclaredMadeForKids: false
-                }
-            },
-            media: {
-                body: fs.createReadStream(videoPath)
-            }
-        });
-
-        console.log(`[YouTube] Upload Complete! ID: ${resUpload.data.id}`);
-        const videoId = resUpload.data.id;
-
-        // --- Playlist Handling ("App Foresvi") ---
-        try {
-            const playlistTitle = "App Foresvi";
-            let playlistId = null;
-
-            // 1. Find existing playlist
-            const resPlaylists = await youtube.playlists.list({
-                part: 'snippet',
-                mine: true,
-                maxResults: 50
-            });
-
-            const existing = resPlaylists.data.items.find(p => p.snippet.title === playlistTitle);
-
-            if (existing) {
-                playlistId = existing.id;
-                console.log(`[YouTube] Found existing playlist: ${playlistId} - "${existing.snippet.title}"`);
-            } else {
-                // 2. Create new playlist
-                console.log(`[YouTube] Creating playlist "${playlistTitle}"...`);
-                const resCreate = await youtube.playlists.insert({
-                    part: 'snippet,status',
-                    requestBody: {
-                        snippet: { title: playlistTitle },
-                        status: { privacyStatus: 'unlisted' }
-                    }
-                });
-                playlistId = resCreate.data.id;
-                console.log(`[YouTube] Created playlist: ${playlistId}`);
-            }
-
-            // 3. Add video to playlist
-            await youtube.playlistItems.insert({
-                part: 'snippet',
-                requestBody: {
-                    snippet: {
-                        playlistId: playlistId,
-                        resourceId: {
-                            kind: 'youtube#video',
-                            videoId: videoId
-                        }
-                    }
-                }
-            });
-            console.log(`[YouTube] Video added to playlist!`);
-
-        } catch (playlistErr) {
-            console.error(`[YouTube] Playlist Error (Non-fatal):`, playlistErr.message);
-            // Don't fail the whole request
-        }
-
-        // Update DB
-        await docRef.update({
-            youtubeId: videoId,
-            youtubeUrl: `https://youtu.be/${videoId}`,
-            youtubeAvailable: true,
-            uploadStatus: 'uploaded',
-            lastUpdate: new Date()
-        });
-
-        res.json({
-            success: true,
-            youtubeId: videoId,
-            youtubeUrl: `https://youtu.be/${videoId}`
-        });
-
-    } catch (e) {
-        console.error('[YouTube] Upload Error:', e);
-        res.status(500).json({ success: false, error: e.message });
-    }
-});
 
 // ============================================================================
 // ENDPOINT: Check NotebookLM Artifacts Status (Non-blocking)
 // ============================================================================
+const checkArtifactsCache = {}; // { notebookId: { data, timestamp } }
+const CHECK_ARTIFACTS_CACHE_TTL = 20000; // 20 seconds
+
 app.get('/api/check-artifacts/:notebookId', async (req, res) => {
     const { notebookId } = req.params;
+
+    // Return cached response if fresh enough
+    const cached = checkArtifactsCache[notebookId];
+    if (cached && (Date.now() - cached.timestamp) < CHECK_ARTIFACTS_CACHE_TTL) {
+        return res.json(cached.data);
+    }
 
     try {
         console.log(`[Check Artifacts] Checking status for notebook: ${notebookId}`);
@@ -1121,10 +1116,9 @@ app.get('/api/check-artifacts/:notebookId', async (req, res) => {
             statusData = { status: 'error', error: mcpErr.message };
         }
 
-        // DEBUG: Log COMPLETE raw response for debugging
-        console.log('[Check Artifacts] ===== FULL STUDIO_STATUS PAYLOAD =====');
-        console.log(JSON.stringify(statusData, null, 2));
-        console.log('[Check Artifacts] ===== END PAYLOAD =====');
+        // Short summary log instead of full dump
+        const artifactCount = statusData?.artifacts?.length || 0;
+        console.log(`[Check Artifacts] Response for ${notebookId}: status=${statusData?.status}, artifacts=${artifactCount}`);
 
         if (!statusData || statusData.status !== 'success') {
             console.warn('[Check Artifacts] Studio status not success:', statusData);
@@ -1223,14 +1217,736 @@ app.get('/api/check-artifacts/:notebookId', async (req, res) => {
         console.log(`  Video: ${response.video?.status || 'N/A'} (raw: ${response.video?.rawStatus || 'N/A'})`);
         console.log(`  All Complete: ${response.allComplete}`);
 
+        // Cache the response
+        checkArtifactsCache[notebookId] = { data: response, timestamp: Date.now() };
         res.json(response);
 
     } catch (e) {
-        console.error('[Check Artifacts] Error:', e);
-        res.status(500).json({ error: e.message });
+        console.error('[Check Artifacts] Error:', e.message);
+        // Return 200 with error info instead of 500 to prevent frontend from counting this as a hard failure
+        res.json({
+            notebookId,
+            status: 'error',
+            error: e.message,
+            summary: { total: 0, completed: 0, in_progress: 0, failed: 0 },
+            allComplete: false
+        });
     }
 });
 
+// ============================================================================
+// ENDPOINT: Process Artifacts - Download to Local Google Drive
+// ============================================================================
+const DRIVE_BASE_PATH = "/Users/maccuatro/Library/CloudStorage/GoogleDrive-actionbdmgalicia@gmail.com/Mi unidad/0_FORESVI/FORESVI LIBROS";
+
+// Helper: sanitize folder name (remove invalid chars for filesystem)
+const sanitizeFolderName = (name) => {
+    return name
+        .replace(/[<>:"/\\|?*]/g, '') // Remove invalid chars
+        .replace(/\s+/g, ' ')         // Collapse whitespace
+        .trim()
+        .substring(0, 100);           // Max length
+};
+
+app.post('/api/process-artifacts/:bookId', async (req, res) => {
+    const { bookId } = req.params;
+    const { notebookId, title, description } = req.body;
+
+    console.log(`[Process Artifacts] Starting for Book: "${title}" (${bookId}), Notebook: ${notebookId}`);
+
+    if (!notebookId) {
+        return res.status(400).json({ error: 'notebookId is required' });
+    }
+
+    try {
+        // 1. Get artifact status from NotebookLM
+        const statusRes = await runMCPTool('studio_status', { notebook_id: notebookId });
+        const statusText = statusRes.content ? statusRes.content[0].text : "";
+        let statusData = null;
+        try { statusData = JSON.parse(statusText); } catch (e) { }
+
+        if (!statusData || !statusData.artifacts || statusData.artifacts.length === 0) {
+            return res.status(404).json({ error: 'No artifacts found for this notebook' });
+        }
+
+        const artifacts = statusData.artifacts;
+        console.log(`[Process Artifacts] Found ${artifacts.length} artifact(s)`);
+
+        // 2. Create folder for this investigation
+        const folderName = sanitizeFolderName(title || `Investigacion_${bookId}`);
+        const folderPath = path.join(DRIVE_BASE_PATH, folderName);
+
+        if (!fs.existsSync(folderPath)) {
+            fs.mkdirSync(folderPath, { recursive: true });
+            console.log(`[Process Artifacts] Created folder: ${folderPath}`);
+        }
+
+        // 3. Download each completed artifact
+        const results = {};
+        const artifactTypes = [
+            { type: 'audio', ext: 'mp3', label: 'Audio Overview' },
+            { type: 'video', ext: 'mp4', label: 'Video Overview' },
+            { type: 'infographic', ext: 'png', label: 'Infografia' },
+        ];
+
+        for (const { type, ext, label } of artifactTypes) {
+            const artifact = artifacts.find(a => a.type === type || a.type === `${type}_overview`);
+
+            if (artifact && artifact.status === 'completed') {
+                const fileName = `${folderName} - ${label}.${ext}`;
+                const filePath = path.join(folderPath, fileName);
+
+                console.log(`[Process Artifacts] Downloading ${type} -> ${filePath}`);
+
+                try {
+                    const downloadRes = await runMCPTool('download_artifact', {
+                        notebook_id: notebookId,
+                        artifact_type: type,
+                        output_path: filePath,
+                        artifact_id: artifact.artifact_id || null
+                    }, 900000); // 15 mins timeout
+
+                    const downloadText = downloadRes.content ? downloadRes.content[0].text : '';
+                    let downloadData = null;
+                    try { downloadData = JSON.parse(downloadText); } catch (e) { }
+
+                    if (fs.existsSync(filePath)) {
+                        const stats = fs.statSync(filePath);
+                        results[type] = {
+                            status: 'downloaded',
+                            path: filePath,
+                            fileName: fileName,
+                            size: stats.size,
+                            artifact_id: artifact.artifact_id
+                        };
+                        console.log(`[Process Artifacts] ✅ ${label} downloaded (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
+                    } else {
+                        results[type] = {
+                            status: 'download_attempted',
+                            mcpResult: downloadText?.substring(0, 300),
+                            artifact_id: artifact.artifact_id
+                        };
+                        console.log(`[Process Artifacts] ⚠️ ${label} file not found at expected path. MCP: ${downloadText?.substring(0, 200)}`);
+                    }
+                } catch (dlErr) {
+                    results[type] = { status: 'error', error: dlErr.message };
+                    console.error(`[Process Artifacts] ❌ ${label} download failed: ${dlErr.message}`);
+                }
+            } else if (artifact) {
+                results[type] = { status: artifact.status, artifact_id: artifact.artifact_id };
+                console.log(`[Process Artifacts] ⏳ ${label} not ready (status: ${artifact.status})`);
+            }
+        }
+
+        // 3b. Extract notes/reports as .docx files and presentations as .pptx
+        try {
+            console.log(`[Process Artifacts] Checking for notes/reports...`);
+            const notesRes = await runMCPTool('note', { notebook_id: notebookId, action: 'list' });
+            const notesText = notesRes.content ? notesRes.content[0].text : '';
+            let notesData = null;
+            try { notesData = JSON.parse(notesText); } catch (e) { }
+
+            if (notesData && notesData.notes && notesData.notes.length > 0) {
+                const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } = require('docx');
+
+                for (const note of notesData.notes) {
+                    const noteTitle = note.title || 'Nota sin titulo';
+                    const noteContent = note.content || '';
+
+                    let reportText = noteContent;
+                    try {
+                        const parsed = JSON.parse(noteContent);
+                        if (parsed.answer) reportText = parsed.answer;
+                        else if (parsed.content) reportText = parsed.content;
+                    } catch (e) { /* plain text */ }
+
+                    if (reportText.length > 50) {
+                        const safeTitle = sanitizeFolderName(noteTitle);
+                        const isPresentation = noteTitle.toUpperCase().startsWith('PRESENTACI');
+
+                        if (isPresentation) {
+                            // ── GENERATE PPTX ──────────────────────────────────────────────
+                            try {
+                                const PptxGenJS = require('pptxgenjs');
+                                const pres = new PptxGenJS();
+                                pres.layout = 'LAYOUT_WIDE'; // 16:9
+
+                                // FORESVI Brand Colors
+                                const C_NAVY  = '003349';
+                                const C_RED   = 'E25454';
+                                const C_WHITE = 'FFFFFF';
+                                const C_GRAY  = '717B8D';
+                                const C_LIGHT = 'F0F5F7';
+                                const C_DARK_TEXT = '1A2B38';
+
+                                // Parse slides from markdown content
+                                const slideBlocks = reportText.split(/(?=^## DIAPOSITIVA)/m).filter(s => s.trim());
+                                const parsedSlides = slideBlocks.map(block => {
+                                    const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
+                                    const header = lines[0].replace(/^##\s*DIAPOSITIVA\s*\d+[:\s]+/i, '').trim();
+                                    const bullets = lines.slice(1).filter(l => l).map(l => l.replace(/^[-*•]\s*/, ''));
+                                    return { title: header, bullets };
+                                });
+
+                                // Fallback: if parsing failed, split into raw paragraphs
+                                const slides = parsedSlides.length > 0 ? parsedSlides :
+                                    reportText.split(/\n\n+/).slice(0, 10).map((p, i) => ({
+                                        title: i === 0 ? noteTitle.replace(/^PRESENTACI[ÓO]N\s+/i, '') : `Punto ${i}`,
+                                        bullets: p.split('\n').map(l => l.replace(/^[-*•]\s*/, '')).filter(Boolean)
+                                    }));
+
+                                for (let i = 0; i < slides.length; i++) {
+                                    const s = slides[i];
+                                    const slide = pres.addSlide();
+                                    const isFirst = i === 0;
+                                    const isLast = i === slides.length - 1;
+
+                                    if (isFirst) {
+                                        // ── PORTADA ──
+                                        slide.background = { color: C_NAVY };
+                                        // Línea roja decorativa
+                                        slide.addShape(pres.ShapeType.rect, { x: 0, y: 4.5, w: 10, h: 0.06, fill: { color: C_RED }, line: { width: 0 } });
+                                        // Bloque de color superior
+                                        slide.addShape(pres.ShapeType.rect, { x: 0, y: 0, w: 10, h: 0.4, fill: { color: C_RED }, line: { width: 0 } });
+                                        slide.addText('FORESVI', { x: 0.4, y: 0.05, w: 9.2, h: 0.3, color: C_WHITE, fontSize: 11, fontFace: 'Inter', bold: true });
+                                        // Título
+                                        slide.addText(s.title, {
+                                            x: 0.7, y: 1.2, w: 8.6, h: 2.2,
+                                            color: C_WHITE, fontSize: 38, fontFace: 'Inter', bold: true,
+                                            align: 'center', valign: 'middle', wrap: true
+                                        });
+                                        // Subtítulo / bullets
+                                        if (s.bullets.length > 0) {
+                                            slide.addText(s.bullets.join('  ·  '), {
+                                                x: 0.7, y: 3.5, w: 8.6, h: 0.8,
+                                                color: 'AACAD8', fontSize: 16, fontFace: 'Inter', align: 'center', wrap: true
+                                            });
+                                        }
+                                        // Fecha
+                                        slide.addText(new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long' }), {
+                                            x: 0.4, y: 4.6, w: 9.2, h: 0.4, color: C_GRAY, fontSize: 11, fontFace: 'Inter', align: 'right'
+                                        });
+                                    } else if (isLast) {
+                                        // ── CONCLUSIONES ──
+                                        slide.background = { color: C_NAVY };
+                                        slide.addShape(pres.ShapeType.rect, { x: 0, y: 0, w: 0.15, h: 5.63, fill: { color: C_RED }, line: { width: 0 } });
+                                        slide.addText(s.title, {
+                                            x: 0.45, y: 0.3, w: 9.2, h: 0.9,
+                                            color: C_WHITE, fontSize: 28, fontFace: 'Inter', bold: true, valign: 'middle'
+                                        });
+                                        if (s.bullets.length > 0) {
+                                            slide.addText(
+                                                s.bullets.map(b => ({ text: b, options: { bullet: { type: 'bullet', color: C_RED } } })),
+                                                { x: 0.55, y: 1.4, w: 9, h: 3.5, color: 'D0E8F0', fontSize: 18, fontFace: 'Inter', lineSpacingMultiple: 1.6 }
+                                            );
+                                        }
+                                        slide.addText('FORESVI', {
+                                            x: 7.5, y: 5.1, w: 2.1, h: 0.3, color: C_GRAY, fontSize: 10, fontFace: 'Inter', bold: true, align: 'right'
+                                        });
+                                    } else {
+                                        // ── DIAPOSITIVA DE CONTENIDO ──
+                                        slide.background = { color: C_WHITE };
+                                        // Header bar
+                                        slide.addShape(pres.ShapeType.rect, { x: 0, y: 0, w: 10, h: 1.05, fill: { color: C_NAVY }, line: { width: 0 } });
+                                        slide.addText(s.title, {
+                                            x: 0.35, y: 0.1, w: 8.8, h: 0.85,
+                                            color: C_WHITE, fontSize: 22, fontFace: 'Inter', bold: true, valign: 'middle'
+                                        });
+                                        // Nº diapositiva (en rojo, alineado a la derecha del header)
+                                        slide.addText(`${i + 1}`, {
+                                            x: 8.7, y: 0.1, w: 0.9, h: 0.85,
+                                            color: C_RED, fontSize: 22, fontFace: 'Inter', bold: true, align: 'right', valign: 'middle'
+                                        });
+                                        // Línea decorativa roja bajo el header
+                                        slide.addShape(pres.ShapeType.rect, { x: 0, y: 1.05, w: 10, h: 0.05, fill: { color: C_RED }, line: { width: 0 } });
+                                        // Bullets de contenido
+                                        if (s.bullets.length > 0) {
+                                            slide.addText(
+                                                s.bullets.map(b => ({ text: b, options: { bullet: { type: 'bullet', color: C_NAVY } } })),
+                                                { x: 0.5, y: 1.3, w: 9, h: 3.8, color: C_DARK_TEXT, fontSize: 18, fontFace: 'Inter', lineSpacingMultiple: 1.7, valign: 'top' }
+                                            );
+                                        }
+                                        // Footer
+                                        slide.addShape(pres.ShapeType.rect, { x: 0, y: 5.2, w: 10, h: 0.04, fill: { color: C_GRAY }, line: { width: 0 } });
+                                        slide.addText('FORESVI', {
+                                            x: 0.35, y: 5.27, w: 4, h: 0.25, color: C_GRAY, fontSize: 9, fontFace: 'Inter'
+                                        });
+                                    }
+                                }
+
+                                const presFileName = `${safeTitle}.pptx`;
+                                const presPath = path.join(folderPath, presFileName);
+                                await pres.writeFile({ fileName: presPath });
+
+                                if (fs.existsSync(presPath)) {
+                                    const stats = fs.statSync(presPath);
+                                    results['presentation'] = {
+                                        status: 'downloaded',
+                                        path: presPath,
+                                        fileName: presFileName,
+                                        size: stats.size,
+                                        note_id: note.id,
+                                        title: noteTitle
+                                    };
+                                    console.log(`[Process Artifacts] ✅ Presentation saved as PPTX: ${presFileName} (${slides.length} slides, ${(stats.size / 1024).toFixed(0)} KB)`);
+
+                                    // Try to convert PPTX to PDF
+                                    const presDir = path.dirname(presPath);
+                                    const presBaseName = path.basename(presPath, '.pptx');
+                                    const presPdfPath = path.join(presDir, presBaseName + '.pdf');
+                                    try {
+                                        await new Promise((resolve, reject) => {
+                                            execFile('libreoffice', ['--headless', '--convert-to', 'pdf', '--outdir', presDir, presPath], { timeout: 60000 }, (err) => {
+                                                if (err) reject(err);
+                                                else resolve();
+                                            });
+                                        });
+                                        if (fs.existsSync(presPdfPath)) {
+                                            const pdfStats = fs.statSync(presPdfPath);
+                                            results['presentation_pdf'] = {
+                                                status: 'downloaded',
+                                                path: presPdfPath,
+                                                fileName: presBaseName + '.pdf',
+                                                size: pdfStats.size,
+                                                title: noteTitle
+                                            };
+                                            console.log(`[Process Artifacts] ✅ Presentation converted to PDF: ${presBaseName}.pdf (${(pdfStats.size / 1024).toFixed(0)} KB)`);
+                                        }
+                                    } catch (pdfErr) {
+                                        console.warn(`[Process Artifacts] ⚠️ PDF conversion failed (libreoffice not available): ${pdfErr.message}`);
+                                    }
+                                }
+                            } catch (pptxErr) {
+                                console.error(`[Process Artifacts] ❌ PPTX generation failed: ${pptxErr.message}`);
+                                results['presentation'] = { status: 'error', error: pptxErr.message };
+                            }
+
+                        } else {
+                            // ── GENERATE DOCX (existing logic) ──────────────────────────
+                            const reportFileName = `${safeTitle}.docx`;
+                            const reportPath = path.join(folderPath, reportFileName);
+
+                            const paragraphs = reportText.split('\n').map(line => {
+                                const trimmed = line.trim();
+                                if (trimmed.startsWith('### ')) {
+                                    return new Paragraph({ text: trimmed.replace('### ', ''), heading: HeadingLevel.HEADING_3 });
+                                } else if (trimmed.startsWith('## ')) {
+                                    return new Paragraph({ text: trimmed.replace('## ', ''), heading: HeadingLevel.HEADING_2 });
+                                } else if (trimmed.startsWith('# ')) {
+                                    return new Paragraph({ text: trimmed.replace('# ', ''), heading: HeadingLevel.HEADING_1 });
+                                } else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+                                    return new Paragraph({ children: [new TextRun(trimmed.substring(2))], bullet: { level: 0 } });
+                                } else if (trimmed.startsWith('**') && trimmed.endsWith('**')) {
+                                    return new Paragraph({ children: [new TextRun({ text: trimmed.replace(/\*\*/g, ''), bold: true })] });
+                                } else if (trimmed === '') {
+                                    return new Paragraph({ text: '' });
+                                }
+                                const runs = [];
+                                const parts = trimmed.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/);
+                                for (const part of parts) {
+                                    if (part.startsWith('**') && part.endsWith('**')) {
+                                        runs.push(new TextRun({ text: part.slice(2, -2), bold: true }));
+                                    } else if (part.startsWith('*') && part.endsWith('*')) {
+                                        runs.push(new TextRun({ text: part.slice(1, -1), italics: true }));
+                                    } else if (part) {
+                                        runs.push(new TextRun(part));
+                                    }
+                                }
+                                return new Paragraph({ children: runs });
+                            });
+
+                            const doc = new Document({
+                                sections: [{
+                                    properties: {},
+                                    children: [
+                                        new Paragraph({ text: noteTitle, heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
+                                        new Paragraph({ children: [new TextRun({ text: `Generado por NotebookLM | Notebook: ${notebookId}`, italics: true, size: 18, color: '888888' })] }),
+                                        new Paragraph({ children: [new TextRun({ text: `Fecha: ${new Date().toLocaleString('es-ES')}`, italics: true, size: 18, color: '888888' })] }),
+                                        new Paragraph({ text: '' }),
+                                        ...paragraphs
+                                    ]
+                                }]
+                            });
+
+                            const buffer = await Packer.toBuffer(doc);
+                            fs.writeFileSync(reportPath, buffer);
+
+                            results['report_' + note.id] = {
+                                status: 'downloaded',
+                                path: reportPath,
+                                fileName: reportFileName,
+                                size: buffer.length,
+                                note_id: note.id,
+                                title: noteTitle
+                            };
+                            console.log(`[Process Artifacts] ✅ Report saved as DOCX: ${reportFileName} (${reportText.length} chars)`);
+                        }
+                    }
+                }
+            } else {
+                console.log(`[Process Artifacts] No notes found in notebook.`);
+            }
+        } catch (noteErr) {
+            console.error(`[Process Artifacts] ⚠️ Error fetching notes: ${noteErr.message}`);
+        }
+
+        // 4. Update Firestore with results
+        const dbRef = admin.firestore();
+        const downloadedCount = Object.values(results).filter(r => r.status === 'downloaded').length;
+        const totalArtifacts = Object.keys(results).length;
+
+        await dbRef.collection('books').doc(bookId).update({
+            orchestrationStatus: downloadedCount > 0 ? 'completed' : 'waiting_artifacts',
+            driveFolderPath: folderPath,
+            driveFolderName: folderName,
+            artifactDownloads: results,
+            notebookUrl: `https://notebooklm.google.com/notebook/${notebookId}`,
+            driveProcessedAt: admin.firestore.FieldValue.serverTimestamp(),
+            message: downloadedCount > 0
+                ? `✅ ${downloadedCount}/${totalArtifacts} artefactos descargados a Google Drive`
+                : '⏳ Artefactos aún en proceso...'
+        });
+
+        console.log(`[Process Artifacts] Complete! ${downloadedCount}/${totalArtifacts} downloaded to: ${folderPath}`);
+
+        res.json({
+            success: true,
+            folderPath,
+            folderName,
+            downloaded: downloadedCount,
+            total: totalArtifacts,
+            results
+        });
+
+    } catch (error) {
+        console.error('[Process Artifacts] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================================================
+// ENDPOINT: Import an existing NotebookLM notebook (reverse import)
+// ============================================================================
+app.post('/api/import-notebook', async (req, res) => {
+    const { notebookId, topicId, level } = req.body;
+
+    console.log(`[Import Notebook] Starting import for Notebook: ${notebookId}`);
+
+    if (!notebookId) {
+        return res.status(400).json({ error: 'notebookId is required' });
+    }
+
+    try {
+        // 1. Get notebook info
+        console.log(`[Import Notebook] Fetching notebook info...`);
+        const nbInfo = await runMCPTool('notebook_get', { notebook_id: notebookId });
+        console.log(`[Import Notebook] Notebook info:`, JSON.stringify(nbInfo).substring(0, 500));
+
+        const notebookTitle = nbInfo?.notebook?.title || `Importado ${notebookId.substring(0, 8)}`;
+        const sourceCount = nbInfo?.notebook?.source_count || 0;
+        const sources = nbInfo?.sources || [];
+
+        // 2. Get studio status (what artifacts exist)
+        console.log(`[Import Notebook] Checking studio artifacts...`);
+        const studioInfo = await runMCPTool('studio_status', { notebook_id: notebookId });
+        console.log(`[Import Notebook] Studio status:`, JSON.stringify(studioInfo).substring(0, 500));
+
+        const artifacts = studioInfo?.artifacts || [];
+        const artifactSummary = studioInfo?.summary || { total: 0, completed: 0, in_progress: 0 };
+
+        // 3. Create book ID from title
+        const bookId = `import-${sanitizeFolderName(notebookTitle).toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
+
+        // 4. Create drive folder and download artifacts
+        const folderName = `Investigación ${sanitizeFolderName(notebookTitle)}`;
+        const folderPath = path.join(DRIVE_BASE_PATH, folderName);
+
+        if (!fs.existsSync(folderPath)) {
+            fs.mkdirSync(folderPath, { recursive: true });
+            console.log(`[Import Notebook] Created folder: ${folderPath}`);
+        }
+
+        const artifactTypes = [
+            { type: 'audio', ext: 'mp3', label: 'Audio Overview' },
+            { type: 'video', ext: 'mp4', label: 'Video Overview' },
+            { type: 'infographic', ext: 'png', label: 'Infografia' },
+        ];
+
+        const results = {};
+        let downloadedCount = 0;
+        const totalArtifacts = artifactTypes.length;
+
+        for (const artifact of artifactTypes) {
+            const fileName = `${sanitizeFolderName(notebookTitle)} - ${artifact.label}.${artifact.ext}`;
+            const filePath = path.join(folderPath, fileName);
+
+            // Check if artifact exists as completed in studio
+            const existingArtifact = artifacts.find(a => a.type === artifact.type && a.status === 'completed');
+
+            if (!existingArtifact) {
+                console.log(`[Import Notebook] ⏭️ ${artifact.label} not found or not completed, skipping`);
+                results[artifact.type] = { status: 'not_found', fileName };
+                continue;
+            }
+
+            console.log(`[Import Notebook] Downloading ${artifact.label} -> ${filePath}`);
+            try {
+                const dlResult = await runMCPTool('download_artifact', {
+                    notebook_id: notebookId,
+                    artifact_type: artifact.type,
+                    output_path: filePath
+                }, 900000); // 15 mins timeout
+
+                if (dlResult && (dlResult.status === 'success' || fs.existsSync(filePath))) {
+                    const stat = fs.statSync(filePath);
+                    results[artifact.type] = {
+                        status: 'downloaded',
+                        fileName: fileName,
+                        path: filePath,
+                        size: stat.size,
+                        title: artifact.label
+                    };
+                    downloadedCount++;
+                    console.log(`[Import Notebook] ✅ ${artifact.label} downloaded (${(stat.size / 1024 / 1024).toFixed(2)} MB)`);
+                } else {
+                    results[artifact.type] = { status: 'failed', fileName, error: 'Download failed' };
+                    console.log(`[Import Notebook] ⚠️ ${artifact.label} download failed`);
+                }
+            } catch (dlErr) {
+                results[artifact.type] = { status: 'failed', fileName, error: dlErr.message };
+                console.log(`[Import Notebook] ⚠️ ${artifact.label} error: ${dlErr.message}`);
+            }
+        }
+
+        // 5. Download notes/reports as .docx
+        try {
+            const notesData = await runMCPTool('note', { notebook_id: notebookId, action: 'list' });
+            if (notesData && notesData.notes && notesData.notes.length > 0) {
+                const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } = require('docx');
+
+                for (const note of notesData.notes) {
+                    const noteTitle = note.title || 'Informe';
+                    const reportFileName = `${noteTitle.replace(/[^a-zA-Z0-9\u00C0-\u024F\s-]/g, '').trim()}.docx`;
+                    const reportPath = path.join(folderPath, reportFileName);
+
+                    const noteContent = note.content || '';
+                    const paragraphs = noteContent.split('\n').map(line => {
+                        const trimmed = line.trim();
+                        if (trimmed.startsWith('# ')) {
+                            return new Paragraph({ text: trimmed.substring(2), heading: HeadingLevel.HEADING_1 });
+                        } else if (trimmed.startsWith('## ')) {
+                            return new Paragraph({ text: trimmed.substring(3), heading: HeadingLevel.HEADING_2 });
+                        } else if (trimmed.startsWith('### ')) {
+                            return new Paragraph({ text: trimmed.substring(4), heading: HeadingLevel.HEADING_3 });
+                        } else if (trimmed === '') {
+                            return new Paragraph({ text: '' });
+                        }
+                        const runs = [];
+                        const parts = trimmed.split(/(\*\*[^*]+\*\*)/g);
+                        for (const part of parts) {
+                            if (part.startsWith('**') && part.endsWith('**')) {
+                                runs.push(new TextRun({ text: part.slice(2, -2), bold: true }));
+                            } else {
+                                runs.push(new TextRun({ text: part }));
+                            }
+                        }
+                        return new Paragraph({ children: runs });
+                    });
+
+                    const doc = new Document({
+                        sections: [{
+                            properties: {},
+                            children: [
+                                new Paragraph({ text: noteTitle, heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
+                                new Paragraph({ text: `Importado de NotebookLM: ${notebookTitle}`, alignment: AlignmentType.CENTER, spacing: { after: 400 } }),
+                                ...paragraphs
+                            ]
+                        }]
+                    });
+
+                    const buffer = await Packer.toBuffer(doc);
+                    fs.writeFileSync(reportPath, buffer);
+
+                    results[`report_${notesData.notes.indexOf(note)}`] = {
+                        status: 'downloaded',
+                        fileName: reportFileName,
+                        path: reportPath,
+                        size: buffer.length,
+                        title: noteTitle
+                    };
+                    downloadedCount++;
+                    console.log(`[Import Notebook] ✅ Report saved: ${reportFileName}`);
+                }
+            }
+        } catch (noteErr) {
+            console.error(`[Import Notebook] ⚠️ Error fetching notes: ${noteErr.message}`);
+        }
+
+        // 6. Generate a thumbnail/description via notebook_describe
+        let summary = '';
+        try {
+            const descResult = await runMCPTool('notebook_describe', { notebook_id: notebookId });
+            if (descResult && descResult.summary) {
+                summary = descResult.summary;
+            }
+        } catch (descErr) {
+            console.log(`[Import Notebook] Could not get description: ${descErr.message}`);
+        }
+
+        // 7. Save to Firestore
+        const bookData = {
+            title: `Investigación: ${notebookTitle}`,
+            notebookId: notebookId,
+            notebookUrl: `https://notebooklm.google.com/notebook/${notebookId}`,
+            sourceType: 'notebooklm',
+            sourceCount: sourceCount,
+            orchestrationStatus: downloadedCount > 0 ? 'completed' : 'idle',
+            driveFolderPath: folderPath,
+            driveFolderName: folderName,
+            artifactDownloads: results,
+            summary: summary,
+            topicId: topicId || '',
+            level: level || 'Iniciación',
+            isVisible: true,
+            isRecommended: false,
+            isFavorite: false,
+            acceptedDate: new Date().toISOString(),
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            importedAt: admin.firestore.FieldValue.serverTimestamp(),
+            importedFrom: 'notebooklm',
+            thumbnail: '',
+            message: downloadedCount > 0
+                ? `✅ Importado con ${downloadedCount} artefactos desde NotebookLM`
+                : '📥 Notebook importado, artefactos pendientes'
+        };
+
+        await admin.firestore().collection('books').doc(bookId).set(bookData);
+        console.log(`[Import Notebook] ✅ Book saved to Firestore: ${bookId}`);
+
+        console.log(`[Import Notebook] Complete! ${downloadedCount} artifacts imported.`);
+        res.json({
+            success: true,
+            bookId,
+            title: bookData.title,
+            downloaded: downloadedCount,
+            total: totalArtifacts,
+            artifacts: results,
+            sources: sources.map(s => ({ title: s.title, type: s.source_type_name })),
+            summary: summary.substring(0, 500)
+        });
+
+    } catch (error) {
+        console.error('[Import Notebook] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================================================
+// ENDPOINT: Upload PDF/EPUB as source for NotebookLM
+// ============================================================================
+app.post('/api/upload-source', upload.single('file'), (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+
+        const filePath = req.file.path;
+        const fileName = req.file.originalname;
+        const fileSize = req.file.size;
+
+        console.log(`[Upload Source] Received: ${fileName} (${(fileSize / 1024 / 1024).toFixed(1)} MB) -> ${filePath}`);
+
+        res.json({
+            success: true,
+            file: {
+                name: fileName,
+                path: filePath,
+                size: fileSize,
+                type: path.extname(fileName).toLowerCase().replace('.', '')
+            }
+        });
+    } catch (error) {
+        console.error('[Upload Source] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================================================
+// ENDPOINT: Serve files from local Google Drive for admin preview
+// ============================================================================
+app.get('/api/drive-file', (req, res) => {
+    try {
+        const filePath = req.query.path;
+        const isDownload = req.query.download === 'true';
+
+        if (!filePath) {
+            return res.status(400).json({ error: 'Missing path parameter' });
+        }
+
+        // Security: ensure the path is within DRIVE_BASE_PATH
+        const resolvedPath = path.resolve(filePath);
+        if (!resolvedPath.startsWith(DRIVE_BASE_PATH)) {
+            return res.status(403).json({ error: 'Access denied: path outside allowed directory' });
+        }
+
+        if (!fs.existsSync(resolvedPath)) {
+            return res.status(404).json({ error: 'File not found' });
+        }
+
+        // Determine content type
+        const ext = path.extname(resolvedPath).toLowerCase();
+        const contentTypes = {
+            '.mp3': 'audio/mpeg',
+            '.mp4': 'video/mp4',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.webp': 'image/webp',
+            '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            '.md': 'text/markdown',
+            '.pdf': 'application/pdf'
+        };
+
+        const contentType = contentTypes[ext] || 'application/octet-stream';
+        const fileName = path.basename(resolvedPath);
+        const stat = fs.statSync(resolvedPath);
+
+        // Handle range requests for audio/video streaming
+        const range = req.headers.range;
+        if (range && (ext === '.mp3' || ext === '.mp4')) {
+            const parts = range.replace(/bytes=/, '').split('-');
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+            const chunkSize = (end - start) + 1;
+
+            res.writeHead(206, {
+                'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': chunkSize,
+                'Content-Type': contentType,
+            });
+
+            const stream = fs.createReadStream(resolvedPath, { start, end });
+            stream.pipe(res);
+        } else {
+            // Regular response
+            res.setHeader('Content-Type', contentType);
+            res.setHeader('Content-Length', stat.size);
+
+            if (isDownload) {
+                res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+            }
+
+            const stream = fs.createReadStream(resolvedPath);
+            stream.pipe(res);
+        }
+
+        console.log(`[Drive File] Serving: ${fileName} (${(stat.size / 1024 / 1024).toFixed(1)} MB)`);
+    } catch (error) {
+        console.error('[Drive File] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
 
 app.post('/api/generate-orchestrated', async (req, res) => {
     const { bookId, title, sources, config, searchQuery } = req.body;
@@ -1246,6 +1962,12 @@ app.post('/api/generate-orchestrated', async (req, res) => {
         const ts = new Date().toISOString().split('T')[1].split('.')[0];
         console.log(`[Orchestrator ${jobId}] ${msg}`);
         if (jobs[jobId]) jobs[jobId].logs.push(`${ts} - ${msg}`);
+        // Push ONLY message to DB — do NOT overwrite orchestrationStatus
+        const db = admin.firestore();
+        db.collection('books').doc(bookId).set({
+            message: msg,
+            lastUpdate: new Date()
+        }, { merge: true }).catch(e => { });
     }
 
     const updateDB = async (status, data = {}) => {
@@ -1272,10 +1994,32 @@ app.post('/api/generate-orchestrated', async (req, res) => {
             await updateDB('initializing');
 
             log(`Calling notebook_create with title="Foresvi: ${title}"...`);
-            const mcpRes = await runMCPTool('notebook_create', { title: `Foresvi: ${title}` });
-            const mcpResText = mcpRes.content && mcpRes.content[0] ? mcpRes.content[0].text : JSON.stringify(mcpRes);
+            let mcpRes;
+            try {
+                mcpRes = await runMCPTool('notebook_create', { title: `Foresvi: ${title}` });
+            } catch (notebookErr) {
+                const isAuth = notebookErr.message.includes('400') || /auth|cookie|session|login/i.test(notebookErr.message);
+                nlmAuthValid = false;
+                log(`❌ Error creando cuaderno: ${notebookErr.message}`);
+                const errMsg = isAuth
+                    ? '❌ Sesión de NotebookLM expirada. Re-autentícate desde el panel de Admin (botón 🔑 Re-autenticar).'
+                    : `❌ Error al crear cuaderno: ${notebookErr.message}`;
+                await updateDB('error', { error: isAuth ? 'auth_expired' : 'notebook_error', message: errMsg });
+                jobs[jobId].status = 'failed';
+                return;
+            }
 
+            const mcpResText = mcpRes.content && mcpRes.content[0] ? mcpRes.content[0].text : JSON.stringify(mcpRes);
             console.log('[MCP notebook_create raw]', mcpResText.slice(0, 1500));
+
+            // Detect auth errors in response text (400 Bad Request from NLM)
+            if (/400|Bad Request|HTTPStatusError|auth|cookie/i.test(mcpResText)) {
+                nlmAuthValid = false;
+                log('❌ Error 400 de NotebookLM — cookies expiradas');
+                await updateDB('error', { error: 'auth_expired', message: '❌ Sesión de NotebookLM expirada. Re-autentícate desde el panel de Admin (botón 🔑 Re-autenticar).' });
+                jobs[jobId].status = 'failed';
+                return;
+            }
 
             let notebookId = null;
             try {
@@ -1286,9 +2030,10 @@ app.post('/api/generate-orchestrated', async (req, res) => {
                     jobs[jobId].notebookId = notebookId;
                     log(`Notebook created: ${notebookId}`);
                     // Save to DB using helper
-                    await updateDB('initializing', { notebookId });
+                    await updateDB('initializing', { notebookId, message: 'Notebook Creado ✅' });
                 } else {
                     log(`Warning: Could not parse notebook ID. Raw response: ${mcpResText}`);
+                    await updateDB('initializing', { message: 'Iniciando fuentes...' });
                 }
             } catch (e) {
                 log(`Error parsing notebook response: ${e.message}`);
@@ -1298,13 +2043,29 @@ app.post('/api/generate-orchestrated', async (req, res) => {
             if (notebookId && sources && sources.length > 0) {
                 for (const src of sources) {
                     if (src) {
+                        // Handle FILE sources (uploaded PDFs/EPUBs)
+                        if (typeof src === 'object' && src.sourceType === 'file' && src.filePath) {
+                            log(`Adding file source: ${src.fileName} (${src.filePath})`);
+                            try {
+                                await runMCPTool('source_add', {
+                                    notebook_id: notebookId,
+                                    source_type: 'file',
+                                    file_path: src.filePath
+                                });
+                                log(`✅ File source added: ${src.fileName}`);
+                            } catch (srcErr) {
+                                log(`Failed to add file source ${src.fileName}: ${srcErr.message}`);
+                            }
+                            continue;
+                        }
+
                         let finalUrl = null;
 
                         // Handle String (Direct URL)
                         if (typeof src === 'string') {
                             finalUrl = src;
                         }
-                        // Handle Object
+                        // Handle Object with URL
                         else if (typeof src === 'object') {
                             if (src.url) {
                                 finalUrl = src.url;
@@ -1313,10 +2074,6 @@ app.post('/api/generate-orchestrated', async (req, res) => {
                             } else if (src.id && (src.source === 'youtube' || src.type === 'youtube')) {
                                 finalUrl = `https://www.youtube.com/watch?v=${src.id}`;
                             } else if (src.id && !src.url) {
-                                // Fallback: Assume YouTube ID if only ID is present? 
-                                // Better to check if it looks like an ID vs URL?
-                                // For now, if we have 'id' but no URL, and not explicitly youtube, log warning or try constructing?
-                                // Let's follow the user's prompt example which suggested using ID.
                                 finalUrl = `https://www.youtube.com/watch?v=${src.id}`;
                             }
                         }
@@ -1324,7 +2081,7 @@ app.post('/api/generate-orchestrated', async (req, res) => {
                         if (finalUrl) {
                             log(`Adding source: ${finalUrl}`);
                             try {
-                                await runMCPTool('notebook_add_url', { notebook_id: notebookId, url: finalUrl });
+                                await runMCPTool('source_add', { notebook_id: notebookId, source_type: 'url', url: finalUrl });
                             } catch (srcErr) {
                                 log(`Failed to add source ${finalUrl}: ${srcErr.message}`);
                             }
@@ -1346,19 +2103,20 @@ app.post('/api/generate-orchestrated', async (req, res) => {
             const focusPrompt = PROMPTS.audio(config, title);
 
             try {
-                // Use correct tool 'audio_overview_create'
-                const audioRes = await runMCPTool('audio_overview_create', {
+                // Use unified artifact tool
+                const audioRes = await runMCPTool('studio_create', {
                     notebook_id: notebookId,
+                    artifact_type: 'audio',
                     focus_prompt: focusPrompt,
-                    language: config.language === 'English' ? 'en' : 'es',
+                    language: config.audio?.idioma === 'Inglés' ? 'en' : 'es',
                     confirm: true
                 });
 
                 const audioRaw = audioRes.content ? audioRes.content[0].text : JSON.stringify(audioRes);
-                console.log(`[audio_overview_create RAW]`, audioRaw.slice(0, 2000));
+                console.log(`[studio_create audio RAW]`, audioRaw.slice(0, 2000));
 
                 if (audioRaw.includes('Unknown tool')) {
-                    throw new Error('Tool audio_overview_create not found. Cannot generate audio.');
+                    throw new Error('Tool studio_create not found. Cannot generate audio.');
                 }
                 log('Audio generation request sent successfully.');
             } catch (e) {
@@ -1372,8 +2130,9 @@ app.post('/api/generate-orchestrated', async (req, res) => {
             await updateDB('generating_infographic');
 
             try {
-                const infographicRes = await runMCPTool('infographic_create', {
+                const infographicRes = await runMCPTool('studio_create', {
                     notebook_id: jobs[jobId].notebookId,
+                    artifact_type: 'infographic',
                     language: config.infografia.idioma === 'Español' ? 'es' :
                         config.infografia.idioma === 'Inglés' ? 'en' : 'fr',
                     orientation: config.infografia.orientacion === 'Cuadrado' ? 'square' :
@@ -1385,7 +2144,7 @@ app.post('/api/generate-orchestrated', async (req, res) => {
                 });
 
                 const infographicText = infographicRes.content ? infographicRes.content[0].text : JSON.stringify(infographicRes);
-                console.log('[infographic_create RAW]', infographicText.slice(0, 500));
+                console.log('[studio_create infographic RAW]', infographicText.slice(0, 500));
                 log('✅ Infographic generation requested successfully.');
             } catch (e) {
                 log(`⚠️ Infographic generation failed: ${e.message}`);
@@ -1393,28 +2152,93 @@ app.post('/api/generate-orchestrated', async (req, res) => {
             }
 
             // 3.5 Report Generation
-            log('Step 3.5: Generate Report...');
+            log('Step 3.5: Generating Real Report via AI...');
             await updateDB('generating_report');
 
             if (config.informe) {
                 try {
-                    // Attempt to generate report via chat tool if available, or fallback to adding a structured note
-                    // Since 'notebook_chat' isn't explicitly confirmed, we use 'notebook_add_text' to create a structured source/note
-                    const reportTitle = `INFORME ${config.informe.tipo.toUpperCase()} - ${title}`;
-                    const reportPrompt = `Genera un informe ${config.informe.tipo} en ${config.informe.idioma}. ` +
-                        `Foco: ${config.informe.foco}. ` +
-                        `Incluye Resumen Ejecutivo, Puntos Clave y Conclusiones.`;
+                    const reportPrompt = `Actúa como un analista experto. Genera un informe ${config.informe.tipo} en ${config.informe.idioma} sobre este cuaderno. ` +
+                        `Foco específico: ${config.informe.foco}. ` +
+                        `ESTRUCTURA OBLIGATORIA: # RESUMEN EJECUTIVO, ## ANÁLISIS DETALLADO, ## PUNTOS CLAVE, ## CONCLUSIONES Y RECOMENDACIONES.`;
 
-                    // We add this as a source note for now, which acts as the report in the notebook context
-                    await runMCPTool('notebook_add_text', {
+                    // Generate content via query
+                    const queryRes = await runMCPTool('notebook_query', {
                         notebook_id: jobs[jobId].notebookId,
-                        title: reportTitle,
-                        text: `[SOLICITUD DE INFORME]\n${reportPrompt}\n\n(Este documento servirá de base para el informe final generado)`
+                        query: reportPrompt
                     });
 
-                    log('✅ Report generation request (note) created successfully.');
+                    const reportText = queryRes.content?.[0]?.text || 'No se pudo generar contenido para el informe.';
+                    const reportTitle = `INFORME ${config.informe.tipo.toUpperCase()} - ${title}`;
+
+                    // Save the generated report as a note so it appears as an artifact
+                    await runMCPTool('note', {
+                        notebook_id: jobs[jobId].notebookId,
+                        action: 'create',
+                        title: reportTitle,
+                        content: reportText
+                    });
+
+                    log('✅ Report generated and saved successfully.');
                 } catch (e) {
                     log(`⚠️ Report generation failed: ${e.message}`);
+                }
+            }
+
+            // 3.6 Presentation Generation
+            log('Step 3.6: Generating Presentation content via AI...');
+            await updateDB('generating_presentation');
+
+            if (config.presentacion) {
+                try {
+                    const duracion = config.presentacion.duracion || 'Corto';
+                    const numSlides = duracion === 'Corto' ? '8-10' : duracion === 'Medio' ? '12-15' : '18-20';
+                    const presPrompt = `Actúa como un diseñador de presentaciones experto. Genera el contenido estructurado para una presentación de ${numSlides} diapositivas en ${config.presentacion.idioma} sobre este tema.
+Formato: ${config.presentacion.formato || 'Presentación detallada'}.
+Objetivo: ${config.presentacion.foco || 'Crea una presentación que resuma las principales ideas del libro para que un dueño o gerente de una PYME pueda aplicar en su entorno laboral.'}
+
+FORMATO OBLIGATORIO — usa EXACTAMENTE esta estructura para cada diapositiva:
+## DIAPOSITIVA 1: TÍTULO
+[Título principal]
+[Subtítulo o descripción breve]
+
+## DIAPOSITIVA 2: INTRODUCCIÓN
+- [Punto clave 1]
+- [Punto clave 2]
+- [Punto clave 3]
+
+## DIAPOSITIVA N: [TEMA PRINCIPAL]
+- [Punto 1]
+- [Punto 2]
+- [Punto 3]
+
+## DIAPOSITIVA FINAL: CONCLUSIONES Y PRÓXIMOS PASOS
+- [Conclusión 1]
+- [Conclusión 2]
+- [Llamada a la acción]
+
+Sé concreto, usa lenguaje ejecutivo y enfócate en puntos accionables. Máximo 4-5 puntos por diapositiva.`;
+
+                    const queryRes = await runMCPTool('notebook_query', {
+                        notebook_id: jobs[jobId].notebookId,
+                        query: presPrompt
+                    });
+
+                    const presContent = queryRes.content?.[0]?.text || '';
+                    const presNoteTitle = `PRESENTACIÓN ${(config.presentacion.formato || 'DETALLADA').replace(/[^A-Z0-9]/g, '').toUpperCase()} - ${title}`;
+
+                    if (presContent.length > 100) {
+                        await runMCPTool('note', {
+                            notebook_id: jobs[jobId].notebookId,
+                            action: 'create',
+                            title: presNoteTitle,
+                            content: presContent
+                        });
+                        log('✅ Presentation content generated and saved as note.');
+                    } else {
+                        log('⚠️ Presentation content too short, skipping note creation.');
+                    }
+                } catch (e) {
+                    log(`⚠️ Presentation generation failed: ${e.message}`);
                 }
             }
 
@@ -1423,9 +2247,10 @@ app.post('/api/generate-orchestrated', async (req, res) => {
             await updateDB('generating_video');
 
             try {
-                const videoRes = await runMCPTool('video_overview_create', {
+                const videoRes = await runMCPTool('studio_create', {
                     notebook_id: jobs[jobId].notebookId,
-                    format: config.video.formato === 'Vídeo explicativo' ? 'explainer' : 'brief',
+                    artifact_type: 'video',
+                    video_format: config.video.formato === 'Vídeo explicativo' ? 'explainer' : 'brief',
                     language: config.video.idioma === 'Español' ? 'es' :
                         config.video.idioma === 'Inglés' ? 'en' : 'fr',
                     focus_prompt: config.video.foco || '',
@@ -1433,7 +2258,7 @@ app.post('/api/generate-orchestrated', async (req, res) => {
                 });
 
                 const videoText = videoRes.content ? videoRes.content[0].text : JSON.stringify(videoRes);
-                console.log('[video_overview_create RAW]', videoText.slice(0, 500));
+                console.log('[studio_create video RAW]', videoText.slice(0, 500));
                 log('✅ Video overview generation requested successfully.');
             } catch (e) {
                 log(`⚠️ Video overview generation failed: ${e.message}`);
@@ -1462,85 +2287,7 @@ app.post('/api/generate-orchestrated', async (req, res) => {
 
             return; // ← Exit orchestration here (frontend takes over)
 
-            // Save Files
-            const timestamp = Date.now();
-            const bookDir = path.join(publicExportsDir, bookId);
-            if (!fs.existsSync(bookDir)) fs.mkdirSync(bookDir, { recursive: true });
-
-            // Audio
-            const audioExt = artifacts.audio.data.content_type.includes('mpeg') ? 'mp3' : 'm4a';
-            const audioFilename = `audio_${timestamp}.${audioExt}`;
-            const audioPath = path.join(bookDir, audioFilename);
-            fs.writeFileSync(audioPath, Buffer.from(artifacts.audio.data.base64_data, 'base64'));
-            log(`Saved Audio: ${audioFilename}`);
-
-            // Image
-            let imagePath = null;
-            let imageFilename = null;
-
-            if (artifacts.image) {
-                const imgExt = artifacts.image.data.content_type.includes('png') ? 'png' : 'jpg';
-                imageFilename = `image_${timestamp}.${imgExt}`;
-                imagePath = path.join(bookDir, imageFilename);
-                fs.writeFileSync(imagePath, Buffer.from(artifacts.image.data.base64_data, 'base64'));
-                log(`Saved Infographic: ${imageFilename}`);
-            } else {
-                log('⚠️ Infographic missing. Falling back to generated Title Card.');
-                // Fallback generation
-                imageFilename = `image_fallback_${timestamp}.png`;
-                imagePath = path.join(bookDir, imageFilename);
-                await new Promise((resolve) => {
-                    const safeTitle = title.replace(/['":]/g, '').substring(0, 30);
-                    execFile(ffmpegPath, [
-                        '-f', 'lavfi', '-i', 'color=c=003349:s=1280x720',
-                        '-frames:v', '1',
-                        '-vf', `drawtext=fontfile=/System/Library/Fonts/Helvetica.ttc:text='${safeTitle}':fontsize=64:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2`,
-                        '-y', imagePath
-                    ], resolve);
-                });
-            }
-
-            // 6. Loop Video
-            log('Step 6: Rendering MP4...');
-            await updateDB('merging');
-            const videoFilename = `video_${timestamp}.mp4`;
-            const videoPath = path.join(bookDir, videoFilename);
-
-            await new Promise((resolve, reject) => {
-                execFile(ffmpegPath, [
-                    '-loop', '1',
-                    '-i', imagePath,
-                    '-i', audioPath,
-                    '-c:v', 'libx264',
-                    '-tune', 'stillimage',
-                    '-c:a', 'aac',
-                    '-b:a', '192k',
-                    '-pix_fmt', 'yuv420p',
-                    '-shortest',
-                    '-y',
-                    videoPath
-                ], (error) => {
-                    if (error) {
-                        console.error('FFmpeg Error:', error);
-                        reject(error);
-                    } else resolve();
-                });
-            });
-            log(`Video rendered: ${videoFilename}`);
-
-            // 7. Finalize (Manual Upload Mode)
-            const canUpload = hasYouTubeCreds();
-
-            await updateDB('completed', {
-                localAudioUrl: `/exports/${bookId}/${audioFilename}`,
-                localVideoUrl: `/exports/${bookId}/${videoFilename}`,
-                localInfographicUrl: `/exports/${bookId}/${imageFilename}`,
-                youtubeAvailable: canUpload,
-                orchestrationLog: jobs[jobId].logs
-            });
-
-            log('Job Completed Successfully.');
-            jobs[jobId].status = 'completed';
+            // Orchestration launched. Frontend will poll for status.
 
         } catch (e) {
             log(`Critical Error: ${e.message}`);
@@ -1565,142 +2312,7 @@ app.listen(PORT, () => {
 });
 
 
-// --- GOOGLE DRIVE & ARTIFACT PROCESSING (V2) ---
-
-// Helper to get authenticated Google OAuth2 client (Drive + YouTube Read)
-async function getGoogleAuthClient() {
-    const CREDIT_PATH = path.join(__dirname, 'youtube-oauth-client.json');
-    const TOKEN_PATH = path.join(__dirname, 'youtube-token.json');
-
-    if (!fs.existsSync(CREDIT_PATH)) {
-        throw new Error('youtube-oauth-client.json not found. OAuth2 credentials required.');
-    }
-
-    const content = fs.readFileSync(CREDIT_PATH);
-    const credentials = JSON.parse(content);
-    const { client_secret, client_id, redirect_uris } = credentials.installed || credentials.web;
-
-    const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
-
-    if (!fs.existsSync(TOKEN_PATH)) {
-        throw new Error('youtube-token.json not found. Authenticate first using /api/auth/google');
-    }
-
-    const tokens = JSON.parse(fs.readFileSync(TOKEN_PATH));
-    oAuth2Client.setCredentials(tokens);
-
-    // Auto-refresh token if expired
-    oAuth2Client.on('tokens', (newTokens) => {
-        const merged = { ...tokens, ...newTokens };
-        fs.writeFileSync(TOKEN_PATH, JSON.stringify(merged, null, 2));
-        console.log('[Auth] Tokens refreshed and saved.');
-    });
-
-    return oAuth2Client;
-}
-
-// Google Auth Endpoint - now requests Drive + YouTube scopes
-app.get('/api/auth/google', (req, res) => {
-    try {
-        const CREDIT_PATH = path.join(__dirname, 'youtube-oauth-client.json');
-        if (!fs.existsSync(CREDIT_PATH)) {
-            return res.status(400).send('Missing youtube-oauth-client.json.');
-        }
-
-        const content = fs.readFileSync(CREDIT_PATH);
-        const credentials = JSON.parse(content);
-        const { client_secret, client_id, redirect_uris } = credentials.installed || credentials.web;
-        const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
-
-        const authUrl = oAuth2Client.generateAuthUrl({
-            access_type: 'offline',
-            prompt: 'consent',
-            scope: [
-                'https://www.googleapis.com/auth/drive.file',
-                'https://www.googleapis.com/auth/youtube.readonly'
-            ]
-        });
-
-        res.redirect(authUrl);
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// Keep legacy endpoint
-app.get('/api/auth/youtube', (req, res) => res.redirect('/api/auth/google'));
-
-// Callback for Google Auth
-app.get('/api/auth/youtube/callback', async (req, res) => {
-    const { code } = req.query;
-    try {
-        const CREDIT_PATH = path.join(__dirname, 'youtube-oauth-client.json');
-        const content = fs.readFileSync(CREDIT_PATH);
-        const credentials = JSON.parse(content);
-        const { client_secret, client_id, redirect_uris } = credentials.installed || credentials.web;
-        const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
-        const { tokens } = await oAuth2Client.getToken(code);
-        fs.writeFileSync(path.join(__dirname, 'youtube-token.json'), JSON.stringify(tokens, null, 2));
-        res.send('<h1>✅ Autenticación exitosa</h1><p>Tokens guardados. Puedes cerrar esta pestaña.</p>');
-    } catch (e) {
-        res.status(500).send('Authentication failed: ' + e.message);
-    }
-});
-
-// Google Drive Folder ID (configurable via .env)
-const DRIVE_PARENT_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID || null;
-
-// Helper: Find or create a folder in Google Drive
-async function findOrCreateDriveFolder(drive, folderName, parentId) {
-    const escapedName = folderName.replace(/'/g, "\\'");
-    const query = parentId
-        ? `name='${escapedName}' and mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`
-        : `name='${escapedName}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-
-    const searchRes = await drive.files.list({ q: query, fields: 'files(id, name)', spaces: 'drive' });
-
-    if (searchRes.data.files.length > 0) {
-        console.log(`[Drive] Found existing folder: "${folderName}" (${searchRes.data.files[0].id})`);
-        return searchRes.data.files[0].id;
-    }
-
-    const fileMetadata = {
-        name: folderName,
-        mimeType: 'application/vnd.google-apps.folder',
-        ...(parentId ? { parents: [parentId] } : {})
-    };
-
-    const createRes = await drive.files.create({ resource: fileMetadata, fields: 'id' });
-    console.log(`[Drive] Created folder: "${folderName}" (${createRes.data.id})`);
-    return createRes.data.id;
-}
-
-// Helper: Upload file to Google Drive folder
-async function uploadFileToDrive(drive, localPath, fileName, mimeType, folderId) {
-    console.log(`[Drive] Uploading "${fileName}" to folder ${folderId}...`);
-
-    const fileMetadata = { name: fileName, parents: [folderId] };
-    const media = { mimeType, body: fs.createReadStream(localPath) };
-
-    const res = await drive.files.create({
-        resource: fileMetadata,
-        media,
-        fields: 'id, webViewLink, webContentLink'
-    });
-
-    // Make file accessible via link
-    await drive.permissions.create({
-        fileId: res.data.id,
-        requestBody: { role: 'reader', type: 'anyone' }
-    });
-
-    console.log(`[Drive] Uploaded: ${res.data.id} -> ${res.data.webViewLink}`);
-    return {
-        fileId: res.data.id,
-        webViewLink: res.data.webViewLink,
-        webContentLink: res.data.webContentLink
-    };
-}
+// Google Drive & Auth removed
 
 // ============================================================================
 // ENDPOINT: Manual YouTube Link
@@ -1751,9 +2363,13 @@ app.post('/api/youtube/sync-playlist', async (req, res) => {
         return res.status(400).json({ error: 'playlistId required (or set YOUTUBE_PLAYLIST_ID in .env)' });
     }
 
+    if (!process.env.YOUTUBE_API_KEY) {
+        return res.status(500).json({ error: 'YOUTUBE_API_KEY not configured' });
+    }
+
     try {
-        const authClient = await getGoogleAuthClient();
-        const youtube = google.youtube({ version: 'v3', auth: authClient });
+        // Use API Key instead of OAuth
+        const youtube = google.youtube({ version: 'v3', auth: process.env.YOUTUBE_API_KEY });
 
         // Fetch all items from playlist
         let allItems = [];
@@ -1926,221 +2542,4 @@ IMPORTANTE: Al menos 3 aprendizajes, 2 acciones por fase, 3 indicadores. SOLO JS
 // ============================================================================
 // MAIN PROCESSING ENDPOINT V4: Google Drive Storage
 // ============================================================================
-app.post('/api/process-artifacts/:bookId', async (req, res) => {
-    const { bookId } = req.params;
-    const { notebookId, title, description } = req.body;
-    console.log(`[Process V4] Drive sync for: ${title} (${bookId})`);
-
-    const docRef = admin.firestore().collection('books').doc(bookId);
-    const force = req.query.force === '1' || req.query.force === 'true';
-    const LOCK_TTL_MS = parseInt(process.env.PROCESS_LOCK_TTL_MS || '600000');
-
-    // 1. Transactional Lock
-    try {
-        await admin.firestore().runTransaction(async (t) => {
-            const docSnap = await t.get(docRef);
-            if (!docSnap.exists) throw new Error('BOOK_NOT_FOUND');
-            const data = docSnap.data();
-
-            if (data.driveSync && !force) throw new Error('ALREADY_PROCESSED');
-
-            const now = admin.firestore.Timestamp.now();
-            if (data.processing && (data.processingHeartbeatAt || data.processingStartedAt)) {
-                const lastAlive = data.processingHeartbeatAt || data.processingStartedAt;
-                const diff = now.toMillis() - lastAlive.toMillis();
-                if (diff < LOCK_TTL_MS) throw new Error('LOCKED');
-                console.warn(`[Process] Recovering STALE LOCK for ${bookId}`);
-            }
-
-            t.update(docRef, {
-                processing: true,
-                processingStartedAt: now,
-                processingHeartbeatAt: now,
-                status: 'processing',
-                orchestrationStatus: 'processing_drive',
-                updatedAt: now
-            });
-        });
-    } catch (e) {
-        if (e.message === 'ALREADY_PROCESSED') return res.json({ success: true, message: 'Already synced to Drive' });
-        if (e.message === 'LOCKED') return res.status(409).json({ error: 'LOCKED' });
-        return res.status(500).json({ error: 'TRANSACTION_FAILED', details: e.message });
-    }
-
-    const tempDir = path.join(__dirname, 'temp', bookId);
-    let heartbeatTimer = null;
-
-    try {
-        if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-
-        heartbeatTimer = setInterval(() => {
-            docRef.update({ processingHeartbeatAt: admin.firestore.FieldValue.serverTimestamp() })
-                .catch(err => console.warn("[Heartbeat] Failed:", err.message));
-        }, 30_000);
-
-        // A. Google Auth
-        let authClient;
-        try {
-            authClient = await getGoogleAuthClient();
-        } catch (e) {
-            throw { status: 428, code: 'GOOGLE_AUTH_MISSING', message: 'Autentícate en /api/auth/google' };
-        }
-
-        const drive = google.drive({ version: 'v3', auth: authClient });
-
-        // B. Drive Folder
-        const sanitizedTitle = (title || 'Sin Titulo').replace(/[<>:"/\\|?*]/g, '_').substring(0, 100);
-        const bookFolderId = DRIVE_PARENT_FOLDER_ID
-            ? await findOrCreateDriveFolder(drive, sanitizedTitle, DRIVE_PARENT_FOLDER_ID)
-            : await findOrCreateDriveFolder(drive, sanitizedTitle);
-
-        console.log(`[Process V4] Drive folder: ${bookFolderId}`);
-
-        // C. Get Artifacts
-        const statusRes = await runMCPTool('studio_status', { notebook_id: notebookId });
-        const statusData = JSON.parse(statusRes.content ? statusRes.content[0].text : "{}");
-        const artifacts = statusData.artifacts || [];
-
-        const audio = artifacts.find(a => a.type === 'audio' || a.type === 'audio_overview');
-        const video = artifacts.find(a => a.type === 'video' || a.type === 'video_overview');
-        const infographic = artifacts.find(a => a.type === 'infographic');
-        const report = artifacts.find(a => (a.title && a.title.includes('INFORME')) || a.type === 'report');
-
-        const audioUrl = audio ? (audio.url || audio.audio_url) : null;
-        const videoUrl = video ? (video.url || video.video_url) : null;
-        const infographicUrl = infographic?.url || infographic?.infographic_url || null;
-
-        const driveFiles = {};
-        let firebaseAudioUrl = null;
-
-        // D. Audio
-        if (audioUrl) {
-            console.log('[Process V4] Processing Audio...');
-            const audioPath = path.join(tempDir, 'audio.mp3');
-            try {
-                await downloadFileStream(audioUrl, audioPath);
-
-                // Firebase (in-app playback)
-                const fbPath = `audio/${bookId}/${notebookId}.mp3`;
-                firebaseAudioUrl = await uploadFileToFirebase(audioPath, fbPath, 'audio/mpeg');
-
-                // Google Drive
-                driveFiles.audio = await uploadFileToDrive(drive, audioPath, `${sanitizedTitle} - Audio.mp3`, 'audio/mpeg', bookFolderId);
-                console.log(`[Process V4] Audio ✅`);
-            } catch (err) {
-                console.warn('[Process V4] Audio failed:', err.message);
-            }
-        }
-
-        // E. Video
-        if (videoUrl) {
-            console.log('[Process V4] Downloading native video...');
-            const videoPath = path.join(tempDir, 'video.mp4');
-            try {
-                await downloadFileStream(videoUrl, videoPath);
-                driveFiles.video = await uploadFileToDrive(drive, videoPath, `${sanitizedTitle} - Video.mp4`, 'video/mp4', bookFolderId);
-                console.log(`[Process V4] Video ✅`);
-            } catch (err) {
-                console.warn('[Process V4] Video failed:', err.message);
-            }
-        } else if (audioUrl) {
-            console.log('[Process V4] Rendering video from audio...');
-            try {
-                const audioPath = path.join(tempDir, 'audio.mp3');
-                if (!fs.existsSync(audioPath)) await downloadFileStream(audioUrl, audioPath);
-                const videoPath = path.join(tempDir, 'video_rendered.mp4');
-                await renderVideoSafe(ffmpegPath, tempDir, 'audio.mp3', 'video_rendered.mp4', title);
-                driveFiles.video = await uploadFileToDrive(drive, videoPath, `${sanitizedTitle} - Video.mp4`, 'video/mp4', bookFolderId);
-                console.log(`[Process V4] Rendered Video ✅`);
-            } catch (err) {
-                console.warn('[Process V4] Video render failed:', err.message);
-            }
-        }
-
-        // F. Infographic
-        if (infographicUrl) {
-            console.log('[Process V4] Processing infographic...');
-            const imgPath = path.join(tempDir, 'infografia.png');
-            try {
-                await downloadFileStream(infographicUrl, imgPath);
-                driveFiles.infographic = await uploadFileToDrive(drive, imgPath, `${sanitizedTitle} - Infografia.png`, 'image/png', bookFolderId);
-                console.log(`[Process V4] Infographic ✅`);
-            } catch (err) {
-                console.warn('[Process V4] Infographic failed:', err.message);
-            }
-        }
-
-        // G. Roadmap (non-blocking)
-        let roadmap = null;
-        try {
-            console.log('[Process V4] Generating roadmap...');
-            const rPrompt = `Analiza este cuaderno y genera JSON con: resumen_ejecutivo, aprendizajes_clave [{punto,descripcion}], roadmap_accionable {fase_1_inmediato,fase_2_medio_plazo,fase_3_maestria} [{accion,objetivo}], indicadores_exito [strings]. SOLO JSON.`;
-
-            const qRes = await runMCPTool('notebook_query', { notebook_id: notebookId, query: rPrompt });
-            const raw = qRes.content?.[0]?.text || '';
-
-            const tryParse = (t) => { try { return JSON.parse(t); } catch { return null; } };
-            roadmap = tryParse(raw);
-            if (!roadmap) {
-                const p = tryParse(raw);
-                if (p?.answer) { roadmap = tryParse(p.answer); if (!roadmap) { const m = p.answer.match(/\{[\s\S]*\}/); if (m) roadmap = tryParse(m[0]); } }
-            }
-            if (!roadmap) { const m = raw.match(/\{[\s\S]*\}/); if (m) roadmap = tryParse(m[0]); }
-            if (roadmap) roadmap.generatedAt = new Date().toISOString();
-        } catch (err) {
-            console.warn('[Process V4] Roadmap failed (non-fatal):', err.message);
-        }
-
-        // H. Save to Firestore
-        const updates = {
-            driveSync: true,
-            driveFolderId: bookFolderId,
-            driveFolderUrl: `https://drive.google.com/drive/folders/${bookFolderId}`,
-            driveAudioId: driveFiles.audio?.fileId || null,
-            driveAudioUrl: driveFiles.audio?.webViewLink || null,
-            driveVideoId: driveFiles.video?.fileId || null,
-            driveVideoUrl: driveFiles.video?.webViewLink || null,
-            driveInfographicId: driveFiles.infographic?.fileId || null,
-            driveInfographicUrl: driveFiles.infographic?.webViewLink || null,
-            audioUrl: firebaseAudioUrl || audioUrl,
-            audioUrlOriginal: audioUrl,
-            infographicUrl: infographicUrl,
-            reportContent: (report && report.content) ? report.content : `# Informe: ${title}\n\n${description || ""}`,
-            reportUrl: `https://notebooklm.google.com/notebook/${notebookId}`,
-            ...(roadmap ? { roadmap, roadmapGeneratedAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
-            status: 'completed',
-            orchestrationStatus: 'drive_synced',
-            hasAudio: !!audioUrl,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-            errorCode: admin.firestore.FieldValue.delete(),
-            errorMessage: admin.firestore.FieldValue.delete()
-        };
-
-        await docRef.update(updates);
-        console.log(`[Process V4] ✅ Complete for "${title}"`);
-
-        res.json({ success: true, driveFolderId: bookFolderId, driveFiles, hasRoadmap: !!roadmap });
-
-    } catch (e) {
-        console.error(`[Process V4] Failed: ${e.message}`);
-        const status = e.status || 500;
-        await docRef.update({
-            status: status === 428 ? 'config_required' : 'failed',
-            orchestrationStatus: status === 428 ? 'blocked_auth' : 'failed',
-            errorCode: e.code || 'PIPELINE_ERROR',
-            errorMessage: e.message,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-        res.status(status).json({ error: e.code || 'ERROR', message: e.message });
-    } finally {
-        if (heartbeatTimer) clearInterval(heartbeatTimer);
-        await docRef.update({
-            processing: false,
-            processingEndedAt: admin.firestore.FieldValue.serverTimestamp()
-        }).catch(() => { });
-
-        if (fs.existsSync(tempDir)) {
-            try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { }
-        }
-    }
-});
+// Google Drive & Local Process V4 REMOVED

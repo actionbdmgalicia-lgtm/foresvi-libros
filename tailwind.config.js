@@ -7,9 +7,11 @@ export default {
     theme: {
         extend: {
             colors: {
-                'foresvi-blue': '#2563EB',
-                'foresvi-dark': '#204058',
-                'foresvi-gold': '#F59E0B',
+                'foresvi-blue': '#003349',  /* FORESVI Azul corporativo */
+                'foresvi-dark': '#001f2e',  /* Navy profundo para degradados */
+                'foresvi-red':  '#E25454',  /* FORESVI Rojo corporativo */
+                'foresvi-gray': '#717B8D',  /* FORESVI Gris medio */
+                'foresvi-gold': '#F59E0B',  /* Dorado VIP */
             },
             fontFamily: {
                 sans: ['Outfit', 'Inter', 'system-ui', 'sans-serif'],

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactPlayer from 'react-player';
-// Version: 1.1.0 - Build: 2026-02-10 20:45 - Implemented: Vercel Deploy Ready (Relative API)
+// Version: 1.2.0 - Build: 2026-03-05 - Added: Floating Progress Widget + FORESVI colors
 import GenerationConfigPanel from '../components/GenerationConfigPanel';
+import GenerationProgressWidget from '../components/GenerationProgressWidget';
 import { db } from '../firebase';
 import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc, setDoc, query, where, orderBy, limit, deleteField, onSnapshot } from "firebase/firestore";
 
@@ -144,7 +145,7 @@ const AdminDashboard = () => {
     const [previewVideo, setPreviewVideo] = useState(null);
 
     // UI State
-    const [activeTab, setActiveTab] = useState('search');
+    const [activeTab, setActiveTab] = useState('database');
 
     // Processing State (Summary/Audio)
     const [isProcessing, setIsProcessing] = useState(false);
@@ -179,12 +180,39 @@ const AdminDashboard = () => {
             tipo: 'Ejecutivo',
             extension: 'Medio',
             foco: 'Resumen ejecutivo enfocado en aplicación práctica para gerentes.'
+        },
+        presentacion: {
+            formato: 'Presentación detallada',
+            idioma: 'Español',
+            duracion: 'Corto',
+            foco: 'Crea una presentación que resuma las principales ideas del libro para que un dueño o gerente de una PYME pueda aplicar en su entorno laboral. Utiliza ejemplos prácticos e imágenes unidas a los ejemplos utilizados en el libro, principalmente en el texto original del libro.'
         }
     });
+
+    // NotebookLM Auth Status
+    const [nlmStatus, setNlmStatus] = useState(null); // null=checking, true=ok, false=expired
+
+    const checkNlmStatus = async () => {
+        setNlmStatus(null);
+        try {
+            const res = await fetch(`${API_BASE}/api/nlm-status`);
+            const data = await res.json();
+            setNlmStatus(data.connected);
+        } catch {
+            setNlmStatus(false);
+        }
+    };
 
     // Orchestration Status
     // valid values: 'idle', 'generating_audio', 'generating_infographic', 'generating_video', 'merging', 'uploading', 'completed', 'error'
     const [orchestrationStatus, setOrchestrationStatus] = useState('idle');
+
+    // ── Widget flotante de progreso ──────────────────────────────────────────
+    const [activeGenId,      setActiveGenId]      = useState(null);   // bookId en curso
+    const [activeGenTitle,   setActiveGenTitle]   = useState('');      // título del notebook
+    const [activeGenStatus,  setActiveGenStatus]  = useState('idle');  // estado en tiempo real
+    const [activeGenMessage, setActiveGenMessage] = useState('');      // mensaje del paso actual
+    const [showWidget,       setShowWidget]       = useState(false);   // visibilidad del widget
 
     // Edit State
     const [editingVideoIdx, setEditingVideoIdx] = useState(-1);
@@ -196,6 +224,15 @@ const AdminDashboard = () => {
     // Persistent State (Now using local as fallback, but targeting Firestore)
     const [acceptedVideos, setAcceptedVideos] = useState([]);
     const [topics, setTopics] = useState([]);
+
+    // Uploaded File Sources (PDFs, EPUBs)
+    const [uploadedFiles, setUploadedFiles] = useState([]);
+
+    // Import Notebook State
+    const [importInput, setImportInput] = useState('');
+    const [importStatus, setImportStatus] = useState('idle');
+    const [importResult, setImportResult] = useState(null);
+    const [importStage, setImportStage] = useState('');
 
     // Debug / Logs State
     const [viewingLogsFor, setViewingLogsFor] = useState(null); // video object
@@ -228,6 +265,17 @@ const AdminDashboard = () => {
             }
         }
 
+        // Add uploaded file sources
+        if (uploadedFiles.length > 0) {
+            const fileSources = uploadedFiles.map(f => ({
+                sourceType: 'file',
+                filePath: f.path,
+                fileName: f.name
+            }));
+            finalSources = [...finalSources, ...fileSources];
+            console.log(`📎 Including ${fileSources.length} file source(s):`, fileSources.map(f => f.fileName));
+        }
+
         const customId = selectedVideo?.id || `notebook-${Date.now()}`;
 
         try {
@@ -247,9 +295,13 @@ const AdminDashboard = () => {
                 if (newBook[key] === undefined) delete newBook[key];
             });
 
-            await setDoc(doc(db, "books", customId), newBook, { merge: true });
+            console.log("📝 Enviando datos a Firestore (sin bloquear)...", newBook);
+            setDoc(doc(db, "books", customId), newBook, { merge: true }).catch(err => {
+                console.error("⚠️ Error guardando en Firestore durante el inicio de generación:", err);
+            });
 
             // Call Backend Orchestrator
+            console.log("🚀 Llamando al orquestador backend en:", `${API_BASE}/api/generate-orchestrated`);
             const response = await fetch(`${API_BASE}/api/generate-orchestrated`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -266,6 +318,13 @@ const AdminDashboard = () => {
                 const data = await response.json();
                 setOrchestrationStatus('generating_audio');
                 console.log('✅ Orchestration launched:', data);
+
+                // ── Activar widget flotante ──────────────────────────────────
+                setActiveGenId(customId);
+                setActiveGenTitle(title);
+                setActiveGenStatus('initializing');
+                setActiveGenMessage('Iniciando generación...');
+                setShowWidget(true);
             } else {
                 console.error('❌ Failed to launch');
                 setOrchestrationStatus('error');
@@ -275,6 +334,12 @@ const AdminDashboard = () => {
             console.error(e);
             setOrchestrationStatus('error');
         }
+    };
+
+    // ── Minimizar modal y dejar el widget flotante trabajar en segundo plano ──
+    const handleMinimizeToWidget = () => {
+        setSelectedVideo(null);
+        resetProcessing();
     };
 
     const handleYouTubeUpload = async () => {
@@ -301,6 +366,19 @@ const AdminDashboard = () => {
         }
     }, [acceptedVideos, selectedVideo]);
 
+    // ── Sincronizar estado del widget con Firestore (independiente del modal) ─
+    useEffect(() => {
+        if (!activeGenId || !acceptedVideos.length) return;
+        const book = acceptedVideos.find(v => v.id === activeGenId);
+        if (book) {
+            setActiveGenStatus(book.orchestrationStatus || 'idle');
+            setActiveGenMessage(book.message || '');
+        }
+    }, [acceptedVideos, activeGenId]);
+
+    // Check NotebookLM auth on mount
+    useEffect(() => { checkNlmStatus(); }, []);
+
     // 1. CLOUD SYNC LOGIC (Firestore)
     useEffect(() => {
         if (!db) {
@@ -313,10 +391,18 @@ const AdminDashboard = () => {
         // Listen to Books
         let unsubscribeBooks = () => { };
         try {
-            const qBooks = query(collection(db, "books"), orderBy("acceptedDate", "desc"));
+            const qBooks = query(collection(db, "books"));
             unsubscribeBooks = onSnapshot(qBooks,
                 (snapshot) => {
                     const books = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+
+                    // Client-side sorting guarantees we do not lose documents that lack a date field
+                    books.sort((a, b) => {
+                        const dateA = a.createdAt?.seconds ? a.createdAt.seconds * 1000 : (a.acceptedDate ? new Date(a.acceptedDate).getTime() : 0);
+                        const dateB = b.createdAt?.seconds ? b.createdAt.seconds * 1000 : (b.acceptedDate ? new Date(b.acceptedDate).getTime() : 0);
+                        return dateB - dateA;
+                    });
+
                     setAcceptedVideos(books);
                 },
                 (err) => console.error("Firestore Books Error:", err)
@@ -354,11 +440,24 @@ const AdminDashboard = () => {
         };
     }, []);
 
-    // 2. Poll for Progress (General Status) - Optimized with 404 handling
+    // Shared ref for polling — keeps current data without recreating effects
+    const acceptedVideosRef = useRef(acceptedVideos);
+    const pollingIntervalRef = useRef(null);
+    const failedCheckCountRef = useRef({}); // Track consecutive failures per book
+    const syncAttemptedRef = useRef(new Set()); // Track books that already triggered sync
+
+    useEffect(() => {
+        acceptedVideosRef.current = acceptedVideos;
+    }, [acceptedVideos]);
+
+    // 2. Poll for Progress (General Status) - Uses ref to avoid dependency loop
     useEffect(() => {
         const interval = setInterval(async () => {
+            const currentVideos = acceptedVideosRef.current;
+            if (!currentVideos) return;
+
             // Only poll processing items that have a job ID
-            const videosProcessing = acceptedVideos.filter(v => (v.generationStatus === 'processing' || v.generationStatus === 'pending') && v.generationJobId);
+            const videosProcessing = currentVideos.filter(v => (v.generationStatus === 'processing' || v.generationStatus === 'pending') && v.generationJobId);
 
             if (videosProcessing.length === 0) return;
 
@@ -390,13 +489,12 @@ const AdminDashboard = () => {
                         }
                     }
                 } catch (e) {
-                    console.error("Polling error (network?):", e);
-                    // Silent fail on main poller to avoid spam, won't stop polling unless it's a permanent network error
+                    // Silent fail to avoid spam
                 }
             }
-        }, 5000); // Increased to 5s to reduce load
+        }, 5000);
         return () => clearInterval(interval);
-    }, [acceptedVideos]);
+    }, []); // Empty deps — reads from acceptedVideosRef
 
     // 3. Dedicated Log Poller (High Frequency - 1s)
     useEffect(() => {
@@ -459,59 +557,60 @@ const AdminDashboard = () => {
     // ============================================================================
     // Polling para verificar artefactos de NotebookLM (V2: Drive + Roadmap)
     // ============================================================================
-    const pollingIntervalRef = useRef(null);
-    const lastCheckRef = useRef({});
 
+    // Set up polling interval ONCE — reads from ref for current data
     useEffect(() => {
-        if (pollingIntervalRef.current) {
-            clearInterval(pollingIntervalRef.current);
-            pollingIntervalRef.current = null;
-        }
-
-        // Estados activos
-        const ACTIVE_ORCHESTRATION_STATES = [
-            'initializing', 'generating_audio', 'generating_video',
-            'waiting_artifacts', 'processing_drive'
-        ];
-
-        const booksInProgress = acceptedVideos.filter(v => {
-            const hasActiveStatus = ACTIVE_ORCHESTRATION_STATES.includes(v.orchestrationStatus);
-            const hasNotebook = !!v.notebookId;
-            // Also check if roadmap is missing but artifacts are done (for reprocessing)
-            // or if artifacts are stuck
-            return (hasActiveStatus && hasNotebook);
-        });
-
-        if (booksInProgress.length === 0) return;
-
         const checkArtifacts = async () => {
-            for (const book of booksInProgress) {
+            const currentVideos = acceptedVideosRef.current;
+            if (!currentVideos || currentVideos.length === 0) return;
+
+            const booksNeedingCheck = currentVideos.filter(v => {
+                const needsCheck = v.orchestrationStatus === 'waiting_artifacts';
+                const hasNotebook = !!v.notebookId;
+                const notTooManyFailures = (failedCheckCountRef.current[v.id] || 0) < 10;
+                const notAlreadySyncing = !syncAttemptedRef.current.has(v.id);
+                return needsCheck && hasNotebook && notTooManyFailures && notAlreadySyncing;
+            });
+
+            if (booksNeedingCheck.length === 0) return;
+
+            console.log(`[Artifact Poller] Checking ${booksNeedingCheck.length} book(s)...`);
+
+            for (const book of booksNeedingCheck) {
                 try {
                     if (!book.notebookId) continue;
 
-                    // 1. Check NotebookLM Status
                     const res = await fetch(`${API_BASE}/api/check-artifacts/${book.notebookId}`);
-                    if (!res.ok) continue;
+
+                    if (!res.ok) {
+                        failedCheckCountRef.current[book.id] = (failedCheckCountRef.current[book.id] || 0) + 1;
+                        const failCount = failedCheckCountRef.current[book.id];
+                        console.warn(`[Artifact Poller] check-artifacts failed for "${book.title}" (${failCount}/10)`);
+                        if (failCount >= 10) {
+                            await updateDoc(doc(db, "books", book.id), {
+                                orchestrationStatus: 'error',
+                                message: '❌ Error: No se pudo verificar artefactos después de 10 intentos.'
+                            });
+                        }
+                        continue;
+                    }
+
+                    failedCheckCountRef.current[book.id] = 0;
 
                     const data = await res.json();
                     const audioStatus = data.audio?.status?.toLowerCase() || 'pending';
                     const videoStatus = data.video?.status?.toLowerCase() || 'pending';
 
-                    // Update Progress in Firestore
-                    await updateDoc(doc(db, "books", book.id), {
-                        artifactsStatus: {
-                            audio: audioStatus,
-                            video: videoStatus,
-                            lastChecked: new Date()
-                        }
-                    });
+                    // Update Firestore (non-blocking, fire-and-forget)
+                    updateDoc(doc(db, "books", book.id), {
+                        artifactsStatus: { audio: audioStatus, video: videoStatus, lastChecked: new Date() }
+                    }).catch(() => { });
 
-                    // 2. Trigger Sync if Ready & Not yet syncing
-                    const isReadyForSync = (audioStatus === 'completed' || audioStatus === 'unknown') &&
-                        book.orchestrationStatus !== 'processing_drive' &&
-                        book.orchestrationStatus !== 'drive_synced';
-
+                    // Wait until all artifacts have finished processing (none in progress)
+                    // If everything failed, it will also trigger and download whatever succeeded
+                    const isReadyForSync = data.summary?.in_progress === 0 && data.summary?.total > 0;
                     if (isReadyForSync) {
+                        syncAttemptedRef.current.add(book.id);
                         console.log(`🚀 Artifacts Ready for "${book.title}". Triggering Drive Sync...`);
 
                         await updateDoc(doc(db, "books", book.id), {
@@ -519,33 +618,50 @@ const AdminDashboard = () => {
                             message: '📂 Sincronizando con Google Drive...'
                         });
 
-                        // Call Backend V4
-                        fetch(`${API_BASE}/api/process-artifacts/${book.id}`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                notebookId: book.notebookId,
-                                title: book.title,
-                                description: book.summary
-                            })
-                        }).then(r => r.json()).then(d => {
-                            console.log("Sync Result:", d);
-                        }).catch(err => console.error("Sync Error:", err));
+                        try {
+                            const syncRes = await fetch(`${API_BASE}/api/process-artifacts/${book.id}`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    notebookId: book.notebookId,
+                                    title: book.title,
+                                    description: book.summary
+                                })
+                            });
+
+                            if (syncRes.ok) {
+                                console.log("✅ Sync Result:", await syncRes.json());
+                            } else {
+                                console.error("❌ Sync HTTP Error:", syncRes.status);
+                                await updateDoc(doc(db, "books", book.id), {
+                                    orchestrationStatus: 'sync_error',
+                                    message: `❌ Error de sincronización (HTTP ${syncRes.status}). Reintenta manualmente.`
+                                });
+                            }
+                        } catch (syncErr) {
+                            console.error("❌ Sync Network Error:", syncErr.message);
+                            await updateDoc(doc(db, "books", book.id), {
+                                orchestrationStatus: 'sync_error',
+                                message: `❌ Error de red al sincronizar: ${syncErr.message}`
+                            });
+                        }
                     }
 
                 } catch (e) {
-                    console.error(`Error checking ${book.id}:`, e);
+                    console.error(`[Artifact Poller] Error checking ${book.id}:`, e);
                 }
             }
         };
 
-        checkArtifacts();
-        pollingIntervalRef.current = setInterval(checkArtifacts, 15000);
+        // Initial delay to let Firestore data load, then every 30s
+        const timer = setTimeout(() => checkArtifacts(), 5000);
+        pollingIntervalRef.current = setInterval(checkArtifacts, 30000);
 
         return () => {
+            clearTimeout(timer);
             if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
         };
-    }, [acceptedVideos]);
+    }, []); // Empty deps — interval set once, reads from ref
 
 
     const handleSearch = async () => {
@@ -681,6 +797,7 @@ const AdminDashboard = () => {
         }
 
         setSelectedVideo({ ...video, notebookId: recoveredNotebookId || video.notebookId });
+        setOrchestrationStatus(video.orchestrationStatus || 'idle');
         setAiSummary(video.summary || '');
         setRawTranscription(video.transcription || '');
         setAudioLength(video.audioLength || 0);
@@ -703,6 +820,7 @@ const AdminDashboard = () => {
         setEditingVideoIdx(-1);
         setSelectedTopic(topics[0]?.id || '');
         setSelectedLevel('Iniciación');
+        setOrchestrationStatus('idle');
     };
 
     const handleReject = async (video) => {
@@ -825,17 +943,49 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
     if (!db) return <div style={{ padding: '100px', textAlign: 'center' }}>⚠️ Error: Firebase no se pudo inicializar. Revisa tus variables de entorno y reinicia el servidor.</div>;
 
     return (
+        <>
         <div style={{ paddingTop: '60px', minHeight: '100vh', background: 'var(--bg-secondary)' }}>
             <div className="container" style={{ maxWidth: '1400px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', padding: '1rem 0' }}>
-                    <h2 style={{ margin: 0, fontSize: '1.8rem' }}>Panel de Expertos <span style={{ fontSize: '0.8rem', opacity: 0.5 }}>v1.1.0 ONLINE</span> 🛡️</h2>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <h2 style={{ margin: 0, fontSize: '1.8rem' }}>FORESVI Libros <span style={{ fontSize: '0.75rem', opacity: 0.4, fontWeight: 400 }}>v3.0</span></h2>
+                        {/* NotebookLM Auth Badge */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <div style={{
+                                display: 'flex', alignItems: 'center', gap: 5,
+                                padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600,
+                                background: nlmStatus === true ? '#f0fdf4' : nlmStatus === false ? '#fef2f2' : '#f8fafc',
+                                border: `1px solid ${nlmStatus === true ? '#86efac' : nlmStatus === false ? '#fca5a5' : '#e2e8f0'}`,
+                                color: nlmStatus === true ? '#16a34a' : nlmStatus === false ? '#dc2626' : '#94a3b8',
+                            }}>
+                                <span>{nlmStatus === true ? '🟢' : nlmStatus === false ? '🔴' : '⏳'}</span>
+                                <span>NotebookLM</span>
+                            </div>
+                            {nlmStatus === false && (
+                                <button
+                                    onClick={async () => {
+                                        try {
+                                            await fetch(`${API_BASE}/api/nlm-relogin`, { method: 'POST' });
+                                            alert('Terminal abierta. Acepta el permiso en el navegador y luego haz clic en "Verificar".');
+                                        } catch { alert('Error al abrir terminal. Ejecuta manualmente: nlm login'); }
+                                    }}
+                                    style={{ padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600, cursor: 'pointer', border: '1px solid #fca5a5', background: '#fff1f1', color: '#dc2626' }}
+                                    title="Re-autenticar NotebookLM"
+                                >🔑 Re-autenticar</button>
+                            )}
+                            {nlmStatus === false && (
+                                <button
+                                    onClick={checkNlmStatus}
+                                    style={{ padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600, cursor: 'pointer', border: '1px solid #bfdbfe', background: '#eff6ff', color: '#2563eb' }}
+                                    title="Verificar conexión"
+                                >🔄 Verificar</button>
+                            )}
+                        </div>
+                    </div>
                     <div style={{ display: 'flex', gap: '0.5rem', background: 'white', padding: '4px', borderRadius: '12px', border: '1px solid var(--border-subtle)' }}>
-                        <button onClick={() => setActiveTab('search')} className={`btn ${activeTab === 'search' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'search' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'search' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>🔍 Buscar</button>
-                        <button onClick={() => setActiveTab('database')} className={`btn ${activeTab === 'database' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'database' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'database' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>📚 Biblioteca</button>
-                        <button onClick={() => setActiveTab('playlist')} className={`btn ${activeTab === 'playlist' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'playlist' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'playlist' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>📺 Playlist Sync</button>
-                        <button onClick={() => setActiveTab('playlist')} className={`btn ${activeTab === 'playlist' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'playlist' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'playlist' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>📺 Playlist Sync</button>
+                        <button onClick={() => { setActiveTab('search'); setSelectedVideo(null); resetProcessing(); }} className={`btn ${activeTab === 'search' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'search' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'search' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>🔍 Nuevo Libro</button>
+                        <button onClick={() => { setActiveTab('database'); setSelectedVideo(null); }} className={`btn ${activeTab === 'database' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'database' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'database' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>📚 Biblioteca</button>
                         <button onClick={() => setActiveTab('config')} className={`btn ${activeTab === 'config' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'config' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'config' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>⚙️ Ajustes</button>
-                        <button onClick={() => setActiveTab('help')} className={`btn ${activeTab === 'help' ? 'btn-primary' : ''} `} style={{ border: 'none', background: activeTab === 'help' ? 'var(--accent-primary)' : 'transparent', color: activeTab === 'help' ? 'white' : 'var(--text-secondary)', padding: '0.5rem 1rem', borderRadius: '8px' }}>❓ Ayuda</button>
                     </div>
                 </div>
 
@@ -962,186 +1112,444 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                                 >
                                     🧠 NotebookLM Deep Search
                                 </button>
-                            </div>
-                        </div>
-
-                        <div className="card" style={{ padding: '0.75rem', marginBottom: '1rem', border: searchMode === 'notebooklm' ? '2px solid #3b82f6' : '1px solid var(--border-subtle)' }}>
-                            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
-                                <input
-                                    type="text"
-                                    placeholder={searchMode === 'youtube' ? "Pega un enlace de YouTube o busca temas técnicos..." : "Introduce un tema complejo para investigación profunda..."}
-                                    value={searchQuery}
-                                    onChange={(e) => setSearchQuery(e.target.value)}
-                                    onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
-                                    style={{ flex: 1, padding: '0.8rem 1rem', borderRadius: '8px', border: '1px solid var(--border-subtle)', outline: 'none', fontSize: '1rem' }}
-                                />
-                                <button onClick={() => setSearchQuery('')} className="btn btn-outline" style={{ padding: '0.6rem 1rem' }}>Limpiar</button>
-                                <button onClick={handleSearch} className="btn btn-primary" style={{ padding: '0.6rem 1.5rem', background: searchMode === 'notebooklm' ? 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)' : undefined }}>
-                                    {searchMode === 'notebooklm' ? '🔬 Investigar' : 'Buscar'}
+                                <button
+                                    onClick={() => setSearchMode('import')}
+                                    style={{
+                                        padding: '0.5rem 1.5rem',
+                                        borderRadius: '8px',
+                                        border: 'none',
+                                        background: searchMode === 'import' ? 'linear-gradient(135deg, #16a34a 0%, #15803d 100%)' : 'transparent',
+                                        color: searchMode === 'import' ? 'white' : 'var(--text-secondary)',
+                                        fontWeight: '600',
+                                        display: 'flex', alignItems: 'center', gap: '0.5rem',
+                                        cursor: 'pointer'
+                                    }}
+                                >
+                                    📥 Importar Notebook
                                 </button>
                             </div>
-
-                            {/* NEW FILTERS */}
-                            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                    <label style={{ fontSize: '0.75rem', fontWeight: 'bold' }}>Año:</label>
-                                    <select value={searchFilters.year} onChange={e => setSearchFilters({ ...searchFilters, year: e.target.value })} style={{ padding: '4px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.75rem' }}>
-                                        <option value="">Cualquiera</option>
-                                        <option value="2025">2025</option>
-                                        <option value="2024">2024</option>
-                                        <option value="2023">2023</option>
-                                        <option value="2022">2022</option>
-                                    </select>
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                    <label style={{ fontSize: '0.75rem', fontWeight: 'bold' }}>Idioma:</label>
-                                    <select value={searchFilters.lang} onChange={e => setSearchFilters({ ...searchFilters, lang: e.target.value })} style={{ padding: '4px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.75rem' }}>
-                                        <option value="any">Cualquiera</option>
-                                        <option value="es">Español</option>
-                                        <option value="en">Inglés</option>
-                                    </select>
-                                </div>
-                            </div>
                         </div>
 
-                        {/* RESULTADOS */}
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1rem' }}>
-                            {searchResults.map((video) => {
-                                const stars = searchMode === 'youtube' ? calculateStars(video.views) : 5;
-                                return (
-                                    <div key={video.id} className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', border: '1px solid var(--border-subtle)' }}>
-                                        <div
-                                            style={{
-                                                position: 'relative', height: '160px', background: 'black',
-                                                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                                cursor: searchMode === 'notebooklm' ? 'pointer' : 'default',
-                                                borderBottom: searchMode === 'notebooklm' && selectedSources.find(s => s.id === video.id) ? '4px solid #3b82f6' : 'none'
-                                            }}
-                                            onClick={() => {
-                                                if (searchMode === 'notebooklm') {
-                                                    const exists = selectedSources.find(s => s.id === video.id);
-                                                    if (exists) {
-                                                        setSelectedSources(selectedSources.filter(s => s.id !== video.id));
-                                                    } else {
-                                                        setSelectedSources([...selectedSources, video]);
-                                                    }
-                                                }
-                                            }}
-                                        >
-                                            <img src={video.thumbnail} alt={video.title} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: searchMode === 'notebooklm' && selectedSources.find(s => s.id === video.id) ? 0.7 : 1 }} />
+                        {/* IMPORT NOTEBOOK SECTION */}
+                        {searchMode === 'import' && (() => {
 
-                                            {searchMode === 'notebooklm' && (
-                                                <div style={{
-                                                    position: 'absolute', top: 10, left: 10,
-                                                    width: '24px', height: '24px', borderRadius: '50%',
-                                                    background: selectedSources.find(s => s.id === video.id) ? '#3b82f6' : 'rgba(0,0,0,0.4)',
-                                                    border: '2px solid white',
-                                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                                    color: 'white', fontWeight: 'bold'
-                                                }}>
-                                                    {selectedSources.find(s => s.id === video.id) && '✓'}
-                                                </div>
-                                            )}
+                            const handleImport = async () => {
+                                if (!importInput.trim()) return alert('Pega la URL o ID del Notebook');
 
-                                            {searchMode === 'youtube' && (
-                                                <div style={{ position: 'absolute', top: '8px', left: '8px', background: 'rgba(0,0,0,0.8)', color: 'white', padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem' }}>
-                                                    👁️ {video.views > 1000 ? (video.views / 1000).toFixed(1) + 'k' : video.views} | 🎙️ {Math.floor(video.durationSec / 60)}m
-                                                </div>
-                                            )}
+                                // Extract ID from URL if needed
+                                let nbId = importInput.trim();
+                                if (nbId.includes('/notebook/')) {
+                                    const match = nbId.match(/\/notebook\/([a-zA-Z0-9-_]+)/);
+                                    if (match) nbId = match[1];
+                                }
 
-                                            <div style={{ position: 'absolute', top: '8px', right: '8px', background: 'white', padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem', color: '#fbbf24', fontWeight: 'bold' }}>
-                                                {"⭐".repeat(Math.min(5, Math.max(1, stars)))}
+                                setImportStatus('importing');
+                                setImportStage('Conectando con NotebookLM...');
+
+                                try {
+                                    const res = await fetch(`${API_BASE}/api/import-notebook`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            notebookId: nbId,
+                                            topicId: selectedTopic,
+                                            level: selectedLevel
+                                        })
+                                    });
+
+                                    const data = await res.json();
+
+                                    if (res.ok && data.success) {
+                                        setImportStatus('success');
+                                        setImportResult(data);
+                                    } else {
+                                        setImportStatus('error');
+                                        setImportResult({ error: data.error || 'Unknown error' });
+                                    }
+                                } catch (err) {
+                                    setImportStatus('error');
+                                    setImportResult({ error: err.message });
+                                }
+                            };
+
+                            return (
+                                <div className="card" style={{ padding: '2rem', maxWidth: '700px', margin: '0 auto' }}>
+                                    <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
+                                        <div style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>📥</div>
+                                        <h3 style={{ margin: '0 0 0.5rem 0', fontSize: '1.3rem' }}>Importar Notebook Existente</h3>
+                                        <p style={{ color: '#64748b', fontSize: '0.9rem', margin: 0 }}>
+                                            Importa un cuaderno de NotebookLM que ya tengas creado. Se descargará el audio, vídeo, infografía e informes a Google Drive y se añadirá a tu biblioteca.
+                                        </p>
+                                    </div>
+
+                                    {importStatus === 'idle' && (
+                                        <>
+                                            <div style={{ marginBottom: '1.5rem' }}>
+                                                <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', color: '#334155', marginBottom: '0.5rem' }}>
+                                                    URL o ID del Notebook
+                                                </label>
+                                                <input
+                                                    type="text"
+                                                    placeholder="https://notebooklm.google.com/notebook/xxxxx o pegue el ID directamente"
+                                                    value={importInput}
+                                                    onChange={(e) => setImportInput(e.target.value)}
+                                                    onKeyPress={(e) => e.key === 'Enter' && handleImport()}
+                                                    style={{
+                                                        width: '100%',
+                                                        padding: '0.8rem 1rem',
+                                                        borderRadius: '10px',
+                                                        border: '2px solid #e2e8f0',
+                                                        outline: 'none',
+                                                        fontSize: '0.95rem',
+                                                        transition: 'border-color 0.2s',
+                                                        boxSizing: 'border-box'
+                                                    }}
+                                                    onFocus={(e) => e.target.style.borderColor = '#16a34a'}
+                                                    onBlur={(e) => e.target.style.borderColor = '#e2e8f0'}
+                                                />
+                                                <p style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '0.5rem' }}>
+                                                    Acepta URL completa de NotebookLM o solo el ID (UUID del notebook)
+                                                </p>
                                             </div>
-                                            <button onClick={() => { setSelectedVideo(video); setSelectedTopic(topics[0]?.id || ''); }} style={{ position: 'absolute', bottom: '8px', right: '8px', width: '30px', height: '30px', borderRadius: '50%', background: 'var(--accent-primary)', color: 'white', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
 
-                                            {/* PLAY BUTTON OVERLAY */}
-                                            <div
+                                            <button
+                                                onClick={handleImport}
+                                                disabled={!importInput.trim()}
                                                 style={{
-                                                    position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
-                                                    width: '50px', height: '50px', background: 'rgba(0,0,0,0.6)', borderRadius: '50%',
-                                                    display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-                                                    border: '2px solid white', zIndex: 5
+                                                    width: '100%',
+                                                    padding: '1rem',
+                                                    borderRadius: '12px',
+                                                    border: 'none',
+                                                    background: importInput.trim() ? 'linear-gradient(135deg, #16a34a 0%, #15803d 100%)' : '#e2e8f0',
+                                                    color: importInput.trim() ? 'white' : '#94a3b8',
+                                                    fontWeight: 700,
+                                                    fontSize: '1rem',
+                                                    cursor: importInput.trim() ? 'pointer' : 'not-allowed',
+                                                    transition: 'all 0.2s',
+                                                    boxShadow: importInput.trim() ? '0 4px 12px rgba(22, 163, 74, 0.3)' : 'none'
                                                 }}
-                                                onClick={(e) => { e.stopPropagation(); setPreviewVideo(video); }}
                                             >
-                                                <span style={{ color: 'white', fontSize: '1.5rem', marginLeft: '4px' }}>▶</span>
+                                                📥 Importar a Biblioteca
+                                            </button>
+                                        </>
+                                    )}
+
+                                    {importStatus === 'importing' && (
+                                        <div style={{ textAlign: 'center', padding: '2rem 0' }}>
+                                            <div style={{ marginBottom: '1.5rem' }}>
+                                                <svg style={{ width: '48px', height: '48px', animation: 'spin 1s linear infinite' }} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                    <circle style={{ opacity: 0.25 }} cx="12" cy="12" r="10" stroke="#16a34a" strokeWidth="4"></circle>
+                                                    <path style={{ opacity: 0.75 }} fill="#16a34a" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                </svg>
+                                            </div>
+                                            <h4 style={{ margin: '0 0 0.5rem 0', color: '#16a34a' }}>Importando Notebook...</h4>
+                                            <p style={{ color: '#64748b', fontSize: '0.85rem' }}>{importStage}</p>
+                                            <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', textAlign: 'left', maxWidth: '350px', margin: '1.5rem auto 0' }}>
+                                                {['Obteniendo info del notebook', 'Verificando artefactos', 'Descargando audio', 'Descargando vídeo', 'Descargando infografía', 'Guardando informes', 'Creando entrada en biblioteca'].map((step, i) => (
+                                                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: '#64748b' }}>
+                                                        <span style={{ width: '20px', height: '20px', borderRadius: '50%', background: '#f1f5f9', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.6rem' }}>
+                                                            {i + 1}
+                                                        </span>
+                                                        {step}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            <p style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '1rem' }}>Este proceso puede tardar 1-3 minutos...</p>
+                                        </div>
+                                    )}
+
+                                    {importStatus === 'success' && importResult && (
+                                        <div style={{ textAlign: 'center' }}>
+                                            <div style={{ background: '#f0fdf4', borderRadius: '16px', padding: '2rem', border: '1px solid #bbf7d0', marginBottom: '1.5rem' }}>
+                                                <div style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>✅</div>
+                                                <h3 style={{ margin: '0 0 0.5rem 0', color: '#166534' }}>¡Importación Completada!</h3>
+                                                <p style={{ fontWeight: 600, color: '#334155', margin: '0 0 0.25rem 0' }}>{importResult.title}</p>
+                                                <p style={{ fontSize: '0.85rem', color: '#64748b' }}>
+                                                    {importResult.downloaded} artefactos descargados de {importResult.total} posibles
+                                                </p>
                                             </div>
 
-                                        </div>
-                                        <div style={{ padding: '0.75rem', flex: 1 }}>
-                                            <h4 style={{ fontSize: '0.9rem', marginBottom: '0.4rem', lineClamp: 2, display: '-webkit-box', WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{video.title}</h4>
-                                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{video.channelTitle || 'NotebookLM AI'}</div>
-                                            <div style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '0.2rem', height: '40px', overflow: 'hidden', display: '-webkit-box', WebkitBoxOrient: 'vertical', lineClamp: 2 }}>
-                                                {video.description}
-                                            </div>
-                                            <div style={{ marginTop: '0.8rem', display: 'flex', gap: '0.4rem' }}>
-                                                <button onClick={() => handleReject(video)} className="btn btn-outline" style={{ flex: 1, padding: '0.4rem', fontSize: '0.75rem', color: '#ef4444', borderColor: '#fee2e2' }}>Descartar</button>
-                                                <button onClick={() => { setSelectedVideo(video); setSelectedTopic(topics[0]?.id || ''); }} className="btn btn-primary" style={{ flex: 1, padding: '0.4rem', fontSize: '0.75rem' }}>
-                                                    {searchMode === 'notebooklm' ? 'Configurar' : 'Crear'}
+                                            {/* Downloaded artifacts summary */}
+                                            {importResult.artifacts && (
+                                                <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center', flexWrap: 'wrap', marginBottom: '1rem' }}>
+                                                    {Object.entries(importResult.artifacts).map(([key, val]) => (
+                                                        <span key={key} style={{
+                                                            padding: '0.3rem 0.8rem',
+                                                            borderRadius: '20px',
+                                                            fontSize: '0.75rem',
+                                                            fontWeight: 600,
+                                                            background: val.status === 'downloaded' ? '#dcfce7' : '#f1f5f9',
+                                                            color: val.status === 'downloaded' ? '#166534' : '#94a3b8'
+                                                        }}>
+                                                            {val.status === 'downloaded' ? '✅' : '⏭️'} {val.title || key}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            )}
+
+                                            {/* Sources found */}
+                                            {importResult.sources && importResult.sources.length > 0 && (
+                                                <details style={{ textAlign: 'left', marginBottom: '1rem' }}>
+                                                    <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem', color: '#475569' }}>
+                                                        📚 {importResult.sources.length} fuente(s) encontradas
+                                                    </summary>
+                                                    <div style={{ marginTop: '0.5rem', padding: '0.75rem', background: '#f8fafc', borderRadius: '8px', fontSize: '0.8rem' }}>
+                                                        {importResult.sources.map((s, i) => (
+                                                            <div key={i} style={{ marginBottom: '0.3rem', color: '#64748b' }}>
+                                                                {s.type === 'YouTube' ? '📺' : s.type === 'Website' ? '🌐' : '📄'} {s.title}
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </details>
+                                            )}
+
+                                            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
+                                                <button
+                                                    onClick={() => { setImportStatus('idle'); setImportInput(''); setImportResult(null); }}
+                                                    className="btn btn-outline"
+                                                    style={{ padding: '0.6rem 1.5rem' }}
+                                                >
+                                                    📥 Importar otro
+                                                </button>
+                                                <button
+                                                    onClick={() => setActiveTab('database')}
+                                                    className="btn btn-primary"
+                                                    style={{ padding: '0.6rem 1.5rem' }}
+                                                >
+                                                    📚 Ver en Biblioteca
                                                 </button>
                                             </div>
                                         </div>
-                                    </div>
-                                );
-                            })}
-                        </div>
+                                    )}
 
-                        {/* LOAD MORE BUTTON */}
-                        {nextPageToken && (
-                            <div style={{ display: 'flex', justifyContent: 'center', marginTop: '2rem' }}>
-                                <button
-                                    onClick={async () => {
-                                        const { items, nextPageToken: newOne } = await searchYouTube(searchQuery, searchFilters, nextPageToken);
-                                        setSearchResults([...searchResults, ...items]);
-                                        setNextPageToken(newOne);
-                                    }}
-                                    className="btn btn-outline"
-                                    style={{ padding: '0.8rem 2rem', background: 'white' }}
-                                >
-                                    ⬇️ Cargar Más Videos
-                                </button>
+                                    {importStatus === 'error' && (
+                                        <div style={{ textAlign: 'center' }}>
+                                            <div style={{ background: '#fef2f2', borderRadius: '16px', padding: '2rem', border: '1px solid #fecaca', marginBottom: '1.5rem' }}>
+                                                <div style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>❌</div>
+                                                <h3 style={{ margin: '0 0 0.5rem 0', color: '#991b1b' }}>Error en la Importación</h3>
+                                                <p style={{ fontSize: '0.85rem', color: '#dc2626', wordBreak: 'break-all' }}>
+                                                    {importResult?.error || 'Error desconocido'}
+                                                </p>
+                                            </div>
+                                            <button
+                                                onClick={() => { setImportStatus('idle'); }}
+                                                className="btn btn-outline"
+                                                style={{ padding: '0.6rem 1.5rem' }}
+                                            >
+                                                🔄 Reintentar
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })()}
+
+                        {searchMode !== 'import' && (
+                            <div className="card" style={{ padding: '0.75rem', marginBottom: '1rem', border: searchMode === 'notebooklm' ? '2px solid #3b82f6' : '1px solid var(--border-subtle)' }}>
+                                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                                    <input
+                                        type="text"
+                                        placeholder={searchMode === 'youtube' ? "Pega un enlace de YouTube o busca temas técnicos..." : "Introduce un tema complejo para investigación profunda..."}
+                                        value={searchQuery}
+                                        onChange={(e) => setSearchQuery(e.target.value)}
+                                        onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+                                        style={{ flex: 1, padding: '0.8rem 1rem', borderRadius: '8px', border: '1px solid var(--border-subtle)', outline: 'none', fontSize: '1rem' }}
+                                    />
+                                    <button onClick={() => setSearchQuery('')} className="btn btn-outline" style={{ padding: '0.6rem 1rem' }}>Limpiar</button>
+                                    <button onClick={handleSearch} className="btn btn-primary" style={{ padding: '0.6rem 1.5rem', background: searchMode === 'notebooklm' ? 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)' : undefined }}>
+                                        {searchMode === 'notebooklm' ? '🔬 Investigar' : 'Buscar'}
+                                    </button>
+                                </div>
+
+                                {/* NEW FILTERS */}
+                                <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                        <label style={{ fontSize: '0.75rem', fontWeight: 'bold' }}>Año:</label>
+                                        <select value={searchFilters.year} onChange={e => setSearchFilters({ ...searchFilters, year: e.target.value })} style={{ padding: '4px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.75rem' }}>
+                                            <option value="">Cualquiera</option>
+                                            <option value="2025">2025</option>
+                                            <option value="2024">2024</option>
+                                            <option value="2023">2023</option>
+                                            <option value="2022">2022</option>
+                                        </select>
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                        <label style={{ fontSize: '0.75rem', fontWeight: 'bold' }}>Idioma:</label>
+                                        <select value={searchFilters.lang} onChange={e => setSearchFilters({ ...searchFilters, lang: e.target.value })} style={{ padding: '4px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.75rem' }}>
+                                            <option value="any">Cualquiera</option>
+                                            <option value="es">Español</option>
+                                            <option value="en">Inglés</option>
+                                        </select>
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                        <label style={{ fontSize: '0.75rem', fontWeight: 'bold' }}>Duración:</label>
+                                        <select value={searchFilters.duration} onChange={e => setSearchFilters({ ...searchFilters, duration: e.target.value })} style={{ padding: '4px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.75rem' }}>
+                                            <option value="any">Cualquiera</option>
+                                            <option value="short">Corto (&lt; 4m)</option>
+                                            <option value="medium">Medio (4-20m)</option>
+                                            <option value="long">Largo (&gt; 20m)</option>
+                                        </select>
+                                    </div>
+                                </div>
                             </div>
                         )}
 
-                        {/* FLOATING ACTION BAR FOR NOTEBOOKLM */}
-                        {searchMode === 'notebooklm' && selectedSources.length > 0 && (
-                            <div style={{
-                                position: 'fixed', bottom: '40px', left: '50%', transform: 'translateX(-50%)',
-                                background: 'white', padding: '1rem 2rem', borderRadius: '50px',
-                                boxShadow: '0 10px 30px rgba(0,0,0,0.2)', border: '1px solid var(--border-subtle)',
-                                display: 'flex', alignItems: 'center', gap: '1.5rem', zIndex: 9999,
-                                animation: 'slideUp 0.3s ease-out'
-                            }}>
-                                <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                    <span style={{ fontWeight: '800', color: 'var(--text-primary)' }}>{selectedSources.length} Fuentes seleccionadas</span>
-                                    <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Listas para tu cuaderno</span>
+                        {/* RESULTADOS */}
+                        {searchMode !== 'import' && (<>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1rem' }}>
+                                {searchResults.map((video) => {
+                                    const stars = calculateStars(video.views);
+                                    const isSelected = selectedSources.some(s => s.id === video.id);
+                                    return (
+                                        <div
+                                            key={video.id}
+                                            className="card"
+                                            style={{
+                                                padding: 0,
+                                                overflow: 'hidden',
+                                                display: 'flex',
+                                                flexDirection: 'column',
+                                                border: selectedSources.some(s => s.id === video.id) ? '2px solid #3b82f6' : '1px solid var(--border-subtle)',
+                                                cursor: searchMode === 'notebooklm' ? 'pointer' : 'default',
+                                                transform: selectedSources.some(s => s.id === video.id) ? 'scale(1.02)' : 'none',
+                                                background: selectedSources.some(s => s.id === video.id) ? '#eff6ff' : 'white',
+                                                transition: 'all 0.2s ease'
+                                            }}
+                                            onClick={() => {
+                                                if (searchMode === 'notebooklm') {
+                                                    setSelectedSources(prev => {
+                                                        const isSelected = prev.some(s => s.id === video.id);
+                                                        if (isSelected) {
+                                                            return prev.filter(s => s.id !== video.id);
+                                                        } else {
+                                                            return [...prev, video];
+                                                        }
+                                                    });
+                                                }
+                                            }}
+                                        >
+                                            <div
+                                                style={{
+                                                    position: 'relative', height: '160px', background: 'black',
+                                                    display: 'flex', alignItems: 'center', justifyContent: 'center'
+                                                }}
+                                            >
+                                                <img src={video.thumbnail || undefined} alt={video.title} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: isSelected ? 0.7 : 1 }} />
+
+                                                {searchMode === 'notebooklm' && (
+                                                    <div style={{
+                                                        position: 'absolute', top: 10, left: 10,
+                                                        width: '24px', height: '24px', borderRadius: '50%',
+                                                        background: isSelected ? '#3b82f6' : 'rgba(0,0,0,0.4)',
+                                                        border: '2px solid white',
+                                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                        color: 'white', fontWeight: 'bold'
+                                                    }}>
+                                                        {isSelected && '✓'}
+                                                    </div>
+                                                )}
+
+                                                {(searchMode === 'youtube' || searchMode === 'notebooklm') && (
+                                                    <div style={{ position: 'absolute', top: '8px', left: '8px', background: 'rgba(0,0,0,0.8)', color: 'white', padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem' }}>
+                                                        👁️ {video.views > 1000 ? (video.views / 1000).toFixed(1) + 'k' : video.views} | 🎙️ {Math.floor(video.durationSec / 60)}m
+                                                    </div>
+                                                )}
+
+                                                <div style={{ position: 'absolute', top: '8px', right: '8px', background: 'white', padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem', color: '#fbbf24', fontWeight: 'bold' }}>
+                                                    {"⭐".repeat(Math.min(5, Math.max(1, stars)))}
+                                                </div>
+                                                <button onClick={(e) => { e.stopPropagation(); setSelectedVideo(video); setSelectedTopic(topics[0]?.id || ''); setOrchestrationStatus('idle'); }} style={{ position: 'absolute', bottom: '8px', right: '8px', width: '30px', height: '30px', borderRadius: '50%', background: 'var(--accent-primary)', color: 'white', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+
+                                                {/* PLAY BUTTON OVERLAY */}
+                                                <div
+                                                    style={{
+                                                        position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+                                                        width: '50px', height: '50px', background: 'rgba(0,0,0,0.6)', borderRadius: '50%',
+                                                        display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+                                                        border: '2px solid white', zIndex: 5
+                                                    }}
+                                                    onClick={(e) => { e.stopPropagation(); setPreviewVideo(video); }}
+                                                >
+                                                    <span style={{ color: 'white', fontSize: '1.5rem', marginLeft: '4px' }}>▶</span>
+                                                </div>
+
+                                            </div>
+                                            <div style={{ padding: '0.75rem', flex: 1 }}>
+                                                <h4 style={{ fontSize: '0.9rem', marginBottom: '0.4rem', lineClamp: 2, display: '-webkit-box', WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{video.title}</h4>
+                                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{video.channelTitle || 'NotebookLM AI'}</div>
+                                                <div style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '0.2rem', height: '40px', overflow: 'hidden', display: '-webkit-box', WebkitBoxOrient: 'vertical', lineClamp: 2 }}>
+                                                    {video.description}
+                                                </div>
+                                                <div style={{ marginTop: '0.8rem', display: 'flex', gap: '0.4rem' }}>
+                                                    <button onClick={(e) => { e.stopPropagation(); handleReject(video); }} className="btn btn-outline" style={{ flex: 1, padding: '0.4rem', fontSize: '0.75rem', color: '#ef4444', borderColor: '#fee2e2' }}>Descartar</button>
+                                                    <button onClick={(e) => { e.stopPropagation(); setSelectedVideo(video); setSelectedTopic(topics[0]?.id || ''); setOrchestrationStatus('idle'); }} className="btn btn-primary" style={{ flex: 1, padding: '0.4rem', fontSize: '0.75rem' }}>
+                                                        {searchMode === 'notebooklm' ? 'Configurar' : 'Crear'}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+
+                            {/* LOAD MORE BUTTON */}
+                            {nextPageToken && (
+                                <div style={{ display: 'flex', justifyContent: 'center', marginTop: '2rem' }}>
+                                    <button
+                                        onClick={async () => {
+                                            const { items, nextPageToken: newOne } = await searchYouTube(searchQuery, searchFilters, nextPageToken);
+                                            setSearchResults([...searchResults, ...items]);
+                                            setNextPageToken(newOne);
+                                        }}
+                                        className="btn btn-outline"
+                                        style={{ padding: '0.8rem 2rem', background: 'white' }}
+                                    >
+                                        ⬇️ Cargar Más Videos
+                                    </button>
                                 </div>
-                                <button
-                                    onClick={() => {
-                                        const mockVideo = {
-                                            id: 'notebook-' + Date.now(),
-                                            title: searchQuery ? `Investigación: ${searchQuery} ` : "Nueva Investigación",
-                                            description: `Cuaderno generado a partir de ${selectedSources.length} fuentes seleccionadas.`,
-                                            sources: selectedSources.map(s => `https://www.youtube.com/watch?v=${s.id}`),
-                                            isNotebook: true,
-                                            thumbnail: '/notebook_lm_product_icon.svg'
-                                        };
-                                        setSelectedVideo(mockVideo);
-                                        // Need to ensure topic selected usually, handleAccept will check
-                                    }}
-                                    className="btn"
-                                    style={{
-                                        background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
-                                        color: 'white', padding: '0.8rem 1.5rem', borderRadius: '30px',
-                                        fontWeight: 'bold', border: 'none', cursor: 'pointer',
-                                        boxShadow: '0 4px 15px rgba(37, 99, 235, 0.4)'
-                                    }}
-                                >
-                                    🚀 GENERAR CUADERNO
-                                </button >
-                            </div >
-                        )}
-                    </div >
+                            )}
+
+                            {/* FLOATING ACTION BAR FOR NOTEBOOKLM */}
+                            {searchMode === 'notebooklm' && selectedSources.length > 0 && (
+                                <div style={{
+                                    position: 'fixed', bottom: '40px', left: '50%', transform: 'translateX(-50%)',
+                                    background: 'white', padding: '1rem 2rem', borderRadius: '50px',
+                                    boxShadow: '0 10px 30px rgba(0,0,0,0.2)', border: '1px solid var(--border-subtle)',
+                                    display: 'flex', alignItems: 'center', gap: '1.5rem', zIndex: 9999,
+                                    animation: 'slideUp 0.3s ease-out'
+                                }}>
+                                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                        <span style={{ fontWeight: '800', color: 'var(--text-primary)' }}>{selectedSources.length} Fuentes seleccionadas</span>
+                                        <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Listas para tu cuaderno</span>
+                                    </div>
+                                    <button
+                                        onClick={() => {
+                                            const mockVideo = {
+                                                id: 'notebook-' + Date.now(),
+                                                title: searchQuery ? `Investigación: ${searchQuery} ` : "Nueva Investigación",
+                                                description: `Cuaderno generado a partir de ${selectedSources.length} fuentes seleccionadas.`,
+                                                sources: selectedSources.map(s => `https://www.youtube.com/watch?v=${s.id}`),
+                                                isNotebook: true,
+                                                thumbnail: '/notebook_lm_product_icon.svg'
+                                            };
+                                            setSelectedVideo(mockVideo);
+                                            setOrchestrationStatus('idle');
+                                            // Need to ensure topic selected usually, handleAccept will check
+                                        }}
+                                        className="btn"
+                                        style={{
+                                            background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                                            color: 'white', padding: '0.8rem 1.5rem', borderRadius: '30px',
+                                            fontWeight: 'bold', border: 'none', cursor: 'pointer',
+                                            boxShadow: '0 4px 15px rgba(37, 99, 235, 0.4)'
+                                        }}
+                                    >
+                                        🚀 GENERAR CUADERNO
+                                    </button >
+                                </div >
+                            )}
+                        </>)}
+                    </div>
                 )}
 
                 {/* PLAYLIST SYNC TAB */}
@@ -1187,118 +1595,230 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                     )
                 }
 
-                {/* DATABASE TAB */}
-                {
-                    activeTab === 'database' && (
-                        <div className="card" style={{ padding: '1rem' }}>
-                            <div style={{ overflowX: 'auto' }}>
-                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-                                    <thead>
-                                        <tr style={{ textAlign: 'left', borderBottom: '2px solid var(--border-subtle)' }}>
-                                            <th style={{ padding: '0.75rem' }}>Libro / Audiolibro</th>
-                                            <th style={{ padding: '0.75rem' }}>Drive & Roadmap</th>
-                                            <th style={{ padding: '0.75rem' }}>Estatus</th>
-                                            <th style={{ padding: '0.75rem' }}>Gestión</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {acceptedVideos.map((video, idx) => (
-                                            <tr key={video.id} style={{ borderBottom: '1px solid var(--border-subtle)', background: !video.isVisible ? '#f8fafc' : 'white', opacity: !video.isVisible ? 0.7 : 1 }}>
-                                                <td style={{ padding: '0.75rem', display: 'flex', gap: '0.75rem', alignItems: 'center', maxWidth: '300px' }}>
-                                                    <img src={video.thumbnail} style={{ width: '60px', borderRadius: '4px', filter: !video.isVisible ? 'grayscale(100%)' : 'none' }} alt="" />
-                                                    <div>
-                                                        <div style={{ fontWeight: '600', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px' }}>{video.title} {!video.isVisible && '(Oculto)'}</div>
-                                                        <div style={{ display: 'flex', gap: '0.5rem', fontSize: '0.7rem' }}>
-                                                            {video.recommended && <span style={{ color: 'var(--accent-gold)' }}>🌟 Rec</span>}
-                                                            {video.notebookId && <span style={{ color: '#2563eb' }}>🧠 NB</span>}
-                                                        </div>
-                                                    </div>
-                                                </td>
-                                                <td style={{ padding: '0.75rem' }}>
-                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                                        {video.driveSync ? (
-                                                            <a href={video.driveFolderUrl} target="_blank" style={{ fontSize: '0.75rem', color: '#166534', textDecoration: 'none', fontWeight: 'bold' }}>✅ Drive OK</a>
-                                                        ) : (
-                                                            <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>🚫 Sin Drive</span>
-                                                        )}
+                {/* DATABASE TAB — rediseño en cards */}
+                {activeTab === 'database' && (() => {
+                    // ── Hitos de progreso ──────────────────────────────────────────
+                    const MILESTONES = [
+                        { label: 'Notebook',    icon: '🧠' },
+                        { label: 'Fuentes',     icon: '📚' },
+                        { label: 'Audio',       icon: '🎧' },
+                        { label: 'Infografía',  icon: '🧩' },
+                        { label: 'Vídeo',       icon: '🎬' },
+                        { label: 'Drive',       icon: '☁️' },
+                    ];
 
-                                                        {video.roadmap ? (
-                                                            <span style={{ fontSize: '0.75rem', color: '#8b5cf6', fontWeight: 'bold' }}>🗺️ Roadmap OK</span>
-                                                        ) : (
-                                                            <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>🚫 Sin Mapa</span>
-                                                        )}
+                    const getMilestone = (status) => {
+                        switch (status) {
+                            case 'initializing':            return 0;
+                            case 'generating_audio':        return 1;
+                            case 'generating_infographic':
+                            case 'generating_report':
+                            case 'generating_presentation': return 2;
+                            case 'generating_video':
+                            case 'waiting_artifacts':       return 3;
+                            case 'processing_drive':        return 4;
+                            case 'completed':
+                            case 'drive_synced':            return 6; // todos hechos
+                            default:                        return -1;
+                        }
+                    };
 
-                                                        {video.youtubeId ? (
-                                                            <a href={`https://youtu.be/${video.youtubeId}`} target="_blank" style={{ fontSize: '0.75rem', color: '#ef4444', textDecoration: 'none', fontWeight: 'bold' }}>📺 YouTube OK</a>
-                                                        ) : (
-                                                            <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>🚫 Sin Video</span>
-                                                        )}
-                                                    </div>
-                                                </td>
-                                                <td style={{ padding: '0.75rem' }}>
-                                                    {video.generationStatus === 'processing' ? (
-                                                        <div style={{ width: '120px' }}>
-                                                            <div style={{ fontSize: '0.7rem', marginBottom: '4px', display: 'flex', justifyContent: 'space-between', color: '#3b82f6', fontWeight: 'bold' }}>
-                                                                <span style={{ fontSize: '0.65rem' }}>
-                                                                    {video.generationStatus === 'creating_notebook' ? 'Creando Cuaderno...' :
-                                                                        video.generationStatus === 'generating_image' ? 'Generando Portada...' :
-                                                                            video.generationStatus === 'adding_sources' ? 'Añadiendo Fuentes...' :
-                                                                                video.generationStatus === 'generating_audio' ? 'Creando Audio...' :
-                                                                                    'Procesando...'}
-                                                                </span>
-                                                                <span>{video.generationProgress || 0}%</span>
-                                                            </div>
-                                                            <div style={{ width: '100%', height: '6px', background: '#e2e8f0', borderRadius: '4px', overflow: 'hidden' }}>
-                                                                <div style={{ width: `${video.generationProgress || 0}%`, height: '100%', background: 'linear-gradient(90deg, #3b82f6, #2563eb)', transition: 'width 0.5s ease' }}></div>
-                                                            </div>
-                                                        </div>
-                                                    ) : (
-                                                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', color: '#64748b' }}>
-                                                            <span style={{ fontSize: '0.8rem' }}>
-                                                                {video.generationStatus === 'error' ? '❌ Error' :
-                                                                    video.generationStatus === 'done' ? '✅ Listo' :
-                                                                        '⏳ Pendiente'}
-                                                            </span>
-                                                            <span style={{ fontSize: '0.7rem' }}>
-                                                                🎙️ {Math.floor(video.audioLength / 60)}m | 📝 {video.summary?.length > 20 ? 'OK' : 'Pend'}
-                                                            </span>
-                                                            {video.sourceType === 'notebooklm' && <span style={{ display: 'block', fontSize: '0.7rem', color: '#2563eb', fontWeight: 'bold' }}>🧠 NotebookLM</span>}
-                                                        </div>
+                    // ── Paleta corporativa ─────────────────────────────────────────
+                    const NAVY  = '#003349';
+                    const RED   = '#E25454';
+                    const GREEN = '#16a34a';
+                    const GRAY  = '#717B8D';
+
+                    return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            {acceptedVideos.map((video, idx) => {
+                                const os           = video.orchestrationStatus || 'idle';
+                                const isComplete   = os === 'completed' || os === 'drive_synced';
+                                const isFailed     = os === 'failed' || os === 'error';
+                                const isGenerating = !isComplete && !isFailed && os !== 'idle';
+                                const activeMil    = isComplete ? 6 : getMilestone(os);
+
+                                const downloads     = video.artifactDownloads || {};
+                                const vals          = Object.values(downloads);
+                                const hasAudio      = vals.some(d => d.fileName?.endsWith('.mp3'));
+                                const hasVideo      = vals.some(d => d.fileName?.endsWith('.mp4'));
+                                const hasInfographic= vals.some(d => d.fileName?.endsWith('.png'));
+                                const hasReport     = vals.some(d => d.fileName?.endsWith('.docx') || d.fileName?.endsWith('.md'));
+                                const hasPptx       = vals.some(d => d.fileName?.endsWith('.pptx'));
+
+                                // Inicial para el avatar
+                                const initial = (video.title || 'F').replace(/^(investigaci[oó]n|resumen)[:\s]*/i, '').trim()[0]?.toUpperCase() || 'F';
+
+                                // Color del borde izquierdo por estado
+                                const accentColor = isComplete ? GREEN : isFailed ? '#ef4444' : isGenerating ? NAVY : '#e2e8f0';
+
+                                return (
+                                    <div key={video.id} style={{
+                                        background: isComplete ? '#f0fdf4' : isFailed ? '#fef2f2' : 'white',
+                                        borderRadius: 12,
+                                        border: `1px solid ${isComplete ? '#bbf7d0' : isFailed ? '#fca5a5' : '#e2e8f0'}`,
+                                        borderLeft: `4px solid ${accentColor}`,
+                                        padding: '14px 18px',
+                                        fontFamily: 'Inter, system-ui, sans-serif',
+                                    }}>
+
+                                        {/* ── Fila 1: Avatar + Título + Acciones ─────────────────── */}
+                                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 12 }}>
+
+                                            {/* Avatar corporativo */}
+                                            <div style={{
+                                                width: 44, height: 44, borderRadius: 10, flexShrink: 0,
+                                                background: `linear-gradient(135deg, ${NAVY}, #005577)`,
+                                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                color: 'white', fontWeight: 800, fontSize: 20,
+                                                boxShadow: '0 2px 8px rgba(0,51,73,0.25)',
+                                                border: `2px solid ${accentColor === '#e2e8f0' ? 'rgba(0,51,73,0.15)' : accentColor}`,
+                                            }}>
+                                                {initial}
+                                            </div>
+
+                                            {/* Título + metadatos */}
+                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                <div style={{
+                                                    fontWeight: 700, fontSize: 14, color: '#0f172a',
+                                                    lineHeight: 1.45, marginBottom: 4,
+                                                    wordBreak: 'break-word',
+                                                }}>
+                                                    {video.title}
+                                                </div>
+                                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, fontSize: 11 }}>
+                                                    {video.notebookId && (
+                                                        <a
+                                                            href={`https://notebooklm.google.com/notebook/${video.notebookId}`}
+                                                            target="_blank" rel="noopener noreferrer"
+                                                            style={{ color: NAVY, fontWeight: 600, textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 3 }}
+                                                        >
+                                                            🧠 NotebookLM ↗
+                                                        </a>
                                                     )}
-                                                </td>
-                                                <td style={{ padding: '0.75rem' }}>
-                                                    <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                                        {(video.generationStatus === 'error' || video.generationStatus === 'processing' || video.generationStatus === 'pending') && (
-                                                            <button onClick={() => handleRetry(video)} style={{ background: 'none', border: 'none', color: 'var(--accent-primary)', cursor: 'pointer', fontSize: '1.1rem' }} title="Forzar Reintento / Reiniciar">
-                                                                🔄
-                                                            </button>
-                                                        )}
-                                                        <button onClick={() => { setViewingLogsFor(video); setLiveLogs([]); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.1rem' }} title="Ver Logs del Servidor">
-                                                            📜
-                                                        </button>
-                                                        <button onClick={() => handleEdit(video, idx)} className="btn btn-outline" style={{ padding: '0.2rem 0.6rem', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                                            ✏️ Editar
-                                                        </button>
-                                                        <button onClick={async () => {
-                                                            if (window.confirm('¿Estás seguro de que quieres eliminar este audiolibro?')) {
-                                                                try {
-                                                                    await deleteDoc(doc(db, "books", video.id));
-                                                                    alert("Libro eliminado.");
-                                                                } catch (err) {
-                                                                    alert("Error al eliminar: " + err.message);
-                                                                }
+                                                    {video.driveFolderName && (
+                                                        <span style={{ color: GREEN, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 3 }}>
+                                                            📁 {video.driveFolderName}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            </div>
+
+                                            {/* Acciones */}
+                                            <div style={{ display: 'flex', gap: 6, flexShrink: 0, alignItems: 'center' }}>
+                                                <button
+                                                    onClick={() => handleEdit(video, idx)}
+                                                    style={{ padding: '5px 12px', borderRadius: 8, border: `1px solid ${NAVY}`, background: 'white', color: NAVY, fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}
+                                                >
+                                                    ✏️ Editar
+                                                </button>
+                                                <button
+                                                    onClick={async () => {
+                                                        if (window.confirm('¿Eliminar este libro?')) {
+                                                            try {
+                                                                await deleteDoc(doc(db, "books", video.id));
+                                                            } catch (err) {
+                                                                alert('Error: ' + err.message);
                                                             }
-                                                        }} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer' }}>🗑️</button>
+                                                        }
+                                                    }}
+                                                    style={{ padding: '5px 8px', borderRadius: 8, border: '1px solid #fca5a5', background: '#fff1f1', color: '#ef4444', fontSize: 13, cursor: 'pointer' }}
+                                                    title="Eliminar"
+                                                >🗑</button>
+                                            </div>
+                                        </div>
+
+                                        {/* ── Fila 2: Barra de hitos + Contenidos (solo si no está completo) ── */}
+                                        {!isComplete && <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+
+                                            {/* Barra de hitos */}
+                                            <div style={{ flex: 1 }}>
+                                                <div style={{ display: 'flex', alignItems: 'center' }}>
+                                                    {MILESTONES.map((m, i) => {
+                                                        const done   = isComplete || activeMil > i;
+                                                        const active = !isComplete && !isFailed && activeMil === i;
+                                                        const dotBg  = isFailed && i <= Math.max(activeMil, 0) ? '#ef4444'
+                                                                     : done    ? NAVY
+                                                                     : active  ? RED
+                                                                     : '#e2e8f0';
+                                                        return (
+                                                            <React.Fragment key={i}>
+                                                                {i > 0 && (
+                                                                    <div style={{
+                                                                        flex: 1, height: 2,
+                                                                        background: done ? NAVY : '#e2e8f0',
+                                                                        transition: 'background 0.5s',
+                                                                        minWidth: 10,
+                                                                    }} />
+                                                                )}
+                                                                <div
+                                                                    title={m.label}
+                                                                    style={{
+                                                                        width: 26, height: 26, borderRadius: '50%',
+                                                                        background: dotBg,
+                                                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                                        fontSize: done ? 12 : 13,
+                                                                        color: done || active ? 'white' : '#94a3b8',
+                                                                        flexShrink: 0,
+                                                                        boxShadow: active ? `0 0 0 3px rgba(226,84,84,0.25)` : 'none',
+                                                                        transition: 'all 0.4s',
+                                                                        fontWeight: done ? 800 : 400,
+                                                                    }}
+                                                                >
+                                                                    {done ? '✓' : m.icon}
+                                                                </div>
+                                                            </React.Fragment>
+                                                        );
+                                                    })}
+                                                </div>
+                                                {/* Etiqueta del estado actual */}
+                                                <div style={{ marginTop: 5, fontSize: 10.5, color: isComplete ? GREEN : isFailed ? '#ef4444' : isGenerating ? NAVY : GRAY, fontWeight: 500 }}>
+                                                    {isComplete   ? '✅ Completado — todos los contenidos descargados a Drive'
+                                                   : isFailed     ? '❌ Error en la generación'
+                                                   : isGenerating ? `⚙️ ${MILESTONES[Math.min(activeMil, 5)]?.label || 'Procesando'}...`
+                                                   : '○ Pendiente de generar'}
+                                                </div>
+                                            </div>
+
+                                            {/* Indicadores de contenido */}
+                                            <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
+                                                {[
+                                                    { label: '🎧', title: 'Audio',        done: hasAudio      },
+                                                    { label: '🎬', title: 'Vídeo',        done: hasVideo      },
+                                                    { label: '🧩', title: 'Infografía',   done: hasInfographic},
+                                                    { label: '📄', title: 'Informe',      done: hasReport     },
+                                                    { label: '📊', title: 'Presentación', done: hasPptx       },
+                                                ].map(c => (
+                                                    <div key={c.title} title={c.title} style={{
+                                                        width: 30, height: 30, borderRadius: 8,
+                                                        background: c.done ? '#f0fdf4' : '#f8fafc',
+                                                        border: `1.5px solid ${c.done ? '#86efac' : '#e2e8f0'}`,
+                                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                        fontSize: 14, cursor: 'default',
+                                                        opacity: c.done ? 1 : 0.35,
+                                                        position: 'relative',
+                                                    }}>
+                                                        {c.label}
+                                                        {c.done && (
+                                                            <div style={{
+                                                                position: 'absolute', bottom: -3, right: -3,
+                                                                width: 11, height: 11, borderRadius: '50%',
+                                                                background: GREEN, color: 'white',
+                                                                fontSize: 7, fontWeight: 800,
+                                                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                                border: '1.5px solid white',
+                                                            }}>✓</div>
+                                                        )}
                                                     </div>
-                                                </td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
+                                                ))}
+                                            </div>
+                                        </div>}
+                                    </div>
+                                );
+                            })}
                         </div>
-                    )
-                }
+                    );
+                })()}
 
                 {
                     activeTab === 'config' && (
@@ -1328,7 +1848,7 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1rem' }}>
                                     {acceptedVideos.map((video, idx) => (
                                         <div key={video.id} style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.75rem', background: video.recommended ? '#fffbeb' : 'white', borderRadius: '10px', border: video.recommended ? '1px solid #fde68a' : '1px solid var(--border-subtle)' }}>
-                                            <img src={video.thumbnail} style={{ width: '50px', height: '50px', objectFit: 'cover', borderRadius: '6px' }} alt="" />
+                                            <img src={video.thumbnail || undefined} style={{ width: '50px', height: '50px', objectFit: 'cover', borderRadius: '6px' }} alt="" />
                                             <div style={{ flex: 1 }}>
                                                 <div style={{ fontSize: '0.85rem', fontWeight: 'bold', lineClamp: 1, display: '-webkit-box', WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{video.title}</div>
                                                 <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{topics.find(t => t.id == video.topicId)?.name}</div>
@@ -1356,18 +1876,43 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                     selectedVideo && (
                         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
                             <div className="bg-white w-full max-w-6xl max-h-[90vh] rounded-2xl flex flex-col overflow-hidden shadow-2xl">
-                                <div className={`h-60 shrink-0 relative flex items-center justify-center ${searchMode === 'notebooklm' || selectedVideo.isNotebook ? 'bg-gradient-to-br from-blue-900 to-blue-800' : 'bg-black'
-                                    }`}>
+                                <div className={`h-60 shrink-0 relative flex items-center justify-center ${searchMode === 'notebooklm' || selectedVideo.isNotebook ? '' : 'bg-black'
+                                    }`}
+                                    style={searchMode === 'notebooklm' || selectedVideo.isNotebook ? {
+                                        background: 'linear-gradient(135deg, #f0f6f8 0%, #ffffff 60%, #fdf0f0 100%)',
+                                        borderBottom: '4px solid #003349'
+                                    } : {}}>
                                     {searchMode === 'notebooklm' || selectedVideo.isNotebook ? (
-                                        <div className="text-white text-center">
-                                            <div className="text-5xl opacity-80 mb-2">🧠</div>
-                                            <h2 className="text-3xl font-bold m-0">NotebookLM Generator</h2>
-                                            <p className="opacity-80">Configura la generación de contenido IA</p>
+                                        <div className="flex flex-col items-center justify-center w-full h-full px-6">
+                                            {/* Franja roja superior */}
+                                            <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '5px', background: '#E25454', borderRadius: '0' }} />
+                                            {/* Logo FORESVI */}
+                                            <img
+                                                src="/foresvi-logo.png"
+                                                alt="FORESVI"
+                                                style={{ height: '90px', objectFit: 'contain', marginBottom: '12px', filter: 'drop-shadow(0 2px 8px rgba(0,51,73,0.12))' }}
+                                            />
+                                            {/* Subtítulo */}
+                                            <p style={{ color: '#717B8D', fontSize: '0.9rem', margin: 0, fontWeight: 500, letterSpacing: '0.04em' }}>
+                                                Generador de Contenido IA · NotebookLM
+                                            </p>
                                         </div>
                                     ) : (
                                         <iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${selectedVideo.id}?rel=0&modestbranding=1`} frameBorder="0" allowFullScreen></iframe>
                                     )}
-                                    <button onClick={() => { setSelectedVideo(null); resetProcessing(); }} style={{ position: 'absolute', top: '10px', right: '10px', background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none', borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer' }}>×</button>
+                                    {/* Botón cerrar + minimizar */}
+                                    <div style={{ position: 'absolute', top: '10px', right: '10px', display: 'flex', gap: 6 }}>
+                                        {showWidget && (
+                                            <button
+                                                onClick={handleMinimizeToWidget}
+                                                title="Minimizar — el progreso sigue en el widget"
+                                                style={{ background: 'rgba(226,84,84,0.85)', color: 'white', border: 'none', borderRadius: '20px', padding: '4px 12px', cursor: 'pointer', fontSize: '11px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}
+                                            >
+                                                ↙ Seguir buscando
+                                            </button>
+                                        )}
+                                        <button onClick={() => { setSelectedVideo(null); resetProcessing(); }} style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none', borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer', fontSize: '16px' }}>×</button>
+                                    </div>
                                 </div>
 
                                 <div className="p-6 overflow-y-auto flex-1">
@@ -1382,113 +1927,12 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                                                 notebookId={selectedVideo.notebookId}
                                                 message={selectedVideo.message}
                                                 artifactsStatus={selectedVideo.artifactsStatus}
-                                            />
-
-                                                {/* RESULTADO ORQUESTACIÓN */}
-                                                {orchestrationStatus === 'completed' && selectedVideo.localVideoUrl && (
-                                                    <div style={{ marginTop: '1.5rem', background: 'white', padding: '1.5rem', borderRadius: '12px', border: '1px solid #bbf7d0', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}>
-                                                        <h3 style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#166534', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                                            ✅ Generación Completada
-                                                        </h3>
-
-                                                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem' }}>
-                                                            <div>
-                                                                <h4 style={{ fontWeight: '600', marginBottom: '0.5rem' }}>Previsualización MP4</h4>
-                                                                <video
-                                                                    key={selectedVideo.localVideoUrl}
-                                                                    controls
-                                                                    src={`http://localhost:3001${selectedVideo.localVideoUrl}`}
-                                                                    style={{ width: '100%', borderRadius: '0.5rem', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}
-                                                                />
-                                                            </div>
-                                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                                                                <a href={`http://localhost:3001${selectedVideo.localVideoUrl}`} target="_blank" download style={{ background: '#f3f4f6', padding: '0.75rem', borderRadius: '0.25rem', textAlign: 'center', textDecoration: 'none', color: '#374151', fontWeight: '500' }}>
-                                                                    ⬇️ Descargar Vídeo (MP4)
-                                                                </a>
-                                                                <a href={`http://localhost:3001${selectedVideo.localAudioUrl}`} target="_blank" download style={{ background: '#f3f4f6', padding: '0.75rem', borderRadius: '0.25rem', textAlign: 'center', textDecoration: 'none', color: '#374151', fontWeight: '500' }}>
-                                                                    ⬇️ Descargar Audio (M4A)
-                                                                </a>
-
-                                                                <hr style={{ margin: '0.5rem 0', borderColor: '#e5e7eb' }} />
-
-                                                                <hr style={{ margin: '0.5rem 0', borderColor: '#e5e7eb' }} />
-
-                                                                {/* DRIVE SYNC STATUS */}
-                                                                {selectedVideo.driveSync ? (
-                                                                    <div style={{ marginBottom: '1rem', padding: '0.75rem', background: '#f0fdf4', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
-                                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', color: '#15803d', fontWeight: 'bold' }}>
-                                                                            <span>✅ Sincronizado con Drive</span>
-                                                                        </div>
-                                                                        {selectedVideo.driveFolderUrl && (
-                                                                            <a href={selectedVideo.driveFolderUrl} target="_blank" rel="noopener noreferrer"
-                                                                                style={{ display: 'block', textDecoration: 'none', color: '#2563eb', fontSize: '0.85rem' }}>
-                                                                                📂 Abrir Carpeta
-                                                                            </a>
-                                                                        )}
-                                                                    </div>
-                                                                ) : (
-                                                                    <button
-                                                                        onClick={async () => {
-                                                                            if (!confirm(`¿Sincronizar "${selectedVideo.title}" con Google Drive?`)) return;
-                                                                            try {
-                                                                                alert('Iniciando sincronización...');
-                                                                                await fetch(`${API_BASE}/api/process-artifacts/${selectedVideo.id}`, {
-                                                                                    method: 'POST',
-                                                                                    headers: { 'Content-Type': 'application/json' },
-                                                                                    body: JSON.stringify({
-                                                                                        notebookId: selectedVideo.notebookId,
-                                                                                        title: selectedVideo.title,
-                                                                                        description: selectedVideo.summary
-                                                                                    })
-                                                                                });
-                                                                            } catch (e) { alert('Error: ' + e.message); }
-                                                                        }}
-                                                                        style={{
-                                                                            width: '100%',
-                                                                            padding: '0.75rem',
-                                                                            borderRadius: '0.5rem',
-                                                                            fontWeight: 'bold',
-                                                                            color: 'white',
-                                                                            background: '#0ea5e9',
-                                                                            cursor: 'pointer',
-                                                                            border: 'none',
-                                                                            marginBottom: '1rem'
-                                                                        }}
-                                                                    >
-                                                                        📂 Sincronizar con Drive
-                                                                    </button>
-                                                                )}
-
-                                                                {/* ROADMAP GENERATION */}
-                                                                {selectedVideo.driveSync && !selectedVideo.roadmap && (
-                                                                    <button
-                                                                        onClick={async () => {
-                                                                            if (!confirm(`¿Generar Roadmap para "${selectedVideo.title}"?`)) return;
-                                                                            try {
-                                                                                const res = await fetch(`${API_BASE}/api/books/${selectedVideo.id}/generate-roadmap`, { method: 'POST' });
-                                                                                const d = await res.json();
-                                                                                if (d.success) alert('Roadmap generado correctamente.');
-                                                                                else alert('Error: ' + d.error);
-                                                                            } catch (e) { alert('Error: ' + e.message); }
-                                                                        }}
-                                                                        style={{
-                                                                            width: '100%',
-                                                                            padding: '0.75rem',
-                                                                            borderRadius: '0.5rem',
-                                                                            fontWeight: 'bold',
-                                                                            color: 'white',
-                                                                            background: '#8b5cf6',
-                                                                            cursor: 'pointer',
-                                                                            border: 'none'
-                                                                        }}
-                                                                    >
-                                                                        🗺️ Generar Roadmap
-                                                                    </button>
-                                                                )}
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                )}</>
+                                                driveFolderPath={selectedVideo.driveFolderPath}
+                                                driveFolderName={selectedVideo.driveFolderName}
+                                                artifactDownloads={selectedVideo.artifactDownloads}
+                                                uploadedFiles={uploadedFiles}
+                                                setUploadedFiles={setUploadedFiles}
+                                            /></>
                                         ) : (
                                             <div style={{ padding: '1rem', background: '#f8fafc', borderRadius: '8px', marginBottom: '1.5rem', border: '1px solid #e2e8f0' }}>
                                                 <p style={{ margin: 0, fontSize: '0.9rem', color: '#334155' }}>Analizando video de YouTube...</p>
@@ -1524,248 +1968,166 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                                         </div>
                                     </div>
 
-                                    {/* NOTEBOOK CONNECTION SECTION */}
-                                    <div style={{ marginTop: '1.5rem', padding: '1rem', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-                                        <h4 style={{ margin: '0 0 0.5rem 0', fontSize: '0.9rem', color: '#475569' }}>Conexión NotebookLM 🔗</h4>
-                                        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                                            <input
-                                                type="text"
-                                                placeholder="Pegar Notebook ID aquí..."
-                                                value={selectedVideo.notebookId || ''}
-                                                onChange={(e) => setSelectedVideo({ ...selectedVideo, notebookId: e.target.value })}
-                                                style={{ flex: 1, padding: '0.5rem', fontSize: '0.8rem', borderRadius: '4px', border: '1px solid #cbd5e1' }}
-                                            />
-                                            <button
-                                                className="btn btn-outline"
-                                                onClick={async () => {
-                                                    let idToSave = selectedVideo.notebookId;
-                                                    if (!idToSave) return alert("Ingresa un ID");
 
-                                                    // Auto-clean URL if pasted
-                                                    if (idToSave.includes('/notebook/')) {
-                                                        const match = idToSave.match(/\/notebook\/([a-zA-Z0-9-_]+)/);
-                                                        if (match) idToSave = match[1];
-                                                    }
-
-                                                    // Update State & DB
-                                                    setSelectedVideo({ ...selectedVideo, notebookId: idToSave });
-                                                    await updateDoc(doc(db, "books", selectedVideo.id), { notebookId: idToSave });
-                                                    alert("ID Guardado Correctamente: " + idToSave);
-                                                }}
-                                                style={{ padding: '0.5rem 1rem', fontSize: '0.8rem' }}
-                                            >
-                                                Guardar ID
-                                            </button>
-                                        </div>
-                                        <p style={{ fontSize: '0.7rem', color: '#94a3b8', margin: 0 }}>
-                                            * Si el botón de sincronizar audio no aparece, pega aquí el ID de la URL de NotebookLM (la parte después de /notebook/).
-                                        </p>
-                                    </div>
-
-                                    {selectedVideo && selectedVideo.notebookId && (
-                                        <div style={{ marginTop: '1.5rem', padding: '1rem', background: '#f0fdf4', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
-                                            <h4 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                                Estado de Recursos 📦
+                                    {/* DRIVE CONTENT VIEWER - For completed books */}
+                                    {(orchestrationStatus === 'completed' || orchestrationStatus === 'drive_synced') && selectedVideo.driveFolderPath && (
+                                        <div style={{ marginTop: '1.5rem', padding: '1.5rem', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+                                            <h4 style={{ margin: '0 0 1rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#1e293b' }}>
+                                                📂 Contenidos Generados en Google Drive
                                             </h4>
-                                            {selectedVideo.audioUrl ? (
-                                                /* VIEW 1: Audio is Hosted locally in Firebase */
-                                                <div style={{ marginTop: '1rem' }}>
-                                                    <div style={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '1rem', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' }}>
-                                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
-                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#166534', fontWeight: 'bold' }}>
-                                                                <span style={{ fontSize: '1.2rem' }}>🔊</span>
-                                                                <span>AUDIO FORESVI</span>
-                                                            </div>
-                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                                                <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>Alojado en Cloud ☁️</span>
-                                                                <button
-                                                                    className="btn btn-outline-danger"
-                                                                    style={{ padding: '0.2rem 0.5rem', fontSize: '0.8rem', border: 'none', background: 'transparent' }}
-                                                                    title="Eliminar Audio y Reintentar"
-                                                                    onClick={async () => {
-                                                                        if (!confirm("¿Estás seguro de eliminar este audio y su transcripción? Tendrás que volver a descargarlo.")) return;
 
-                                                                        // Update Firestore to remove audioUrl
-                                                                        try {
-                                                                            await updateDoc(doc(db, "books", selectedVideo.id), {
-                                                                                audioUrl: deleteField(),
-                                                                                transcription: deleteField()
-                                                                            });
-                                                                            // Update local state
-                                                                            setSelectedVideo({
-                                                                                ...selectedVideo,
-                                                                                audioUrl: null,
-                                                                                transcription: null
-                                                                            });
-                                                                        } catch (e) {
-                                                                            alert("Error al eliminar: " + e.message);
-                                                                        }
-                                                                    }}
-                                                                >
-                                                                    🗑️
-                                                                </button>
+                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+                                                {/* Audio Player */}
+                                                {(() => {
+                                                    const audioFile = Object.values(selectedVideo.artifactDownloads || {}).find(d => d.fileName?.endsWith('.mp3'));
+                                                    if (!audioFile) return null;
+                                                    return (
+                                                        <div style={{ background: 'white', borderRadius: '10px', padding: '1rem', border: '1px solid #e2e8f0' }}>
+                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                                                                <span style={{ fontSize: '1.2rem' }}>🎧</span>
+                                                                <span style={{ fontWeight: 600, fontSize: '0.85rem', color: '#334155' }}>Audio Overview</span>
+                                                                <span style={{ fontSize: '0.7rem', color: '#94a3b8', marginLeft: 'auto' }}>{(audioFile.size / 1024 / 1024).toFixed(1)} MB</span>
                                                             </div>
+                                                            <audio
+                                                                controls
+                                                                src={`http://localhost:3001/api/drive-file?path=${encodeURIComponent(audioFile.path)}`}
+                                                                style={{ width: '100%', height: '40px', borderRadius: '20px' }}
+                                                                preload="metadata"
+                                                            />
                                                         </div>
+                                                    );
+                                                })()}
 
-                                                        <audio
-                                                            controls
-                                                            key={selectedVideo.audioUrl}
-                                                            preload="metadata"
-                                                            src={selectedVideo.audioUrl}
-                                                            onError={(e) => console.error("Audio Player Error:", e.target.error, selectedVideo.audioUrl)}
-                                                            style={{ width: '100%', height: '40px', borderRadius: '20px', marginBottom: '1rem' }}
-                                                        >
-                                                            Tu navegador no soporta audio.
-                                                        </audio>
+                                                {/* Video Player */}
+                                                {(() => {
+                                                    const videoFile = Object.values(selectedVideo.artifactDownloads || {}).find(d => d.fileName?.endsWith('.mp4'));
+                                                    if (!videoFile) return null;
+                                                    return (
+                                                        <div style={{ background: 'white', borderRadius: '10px', padding: '1rem', border: '1px solid #e2e8f0' }}>
+                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                                                                <span style={{ fontSize: '1.2rem' }}>🎬</span>
+                                                                <span style={{ fontWeight: 600, fontSize: '0.85rem', color: '#334155' }}>Video Overview</span>
+                                                                <span style={{ fontSize: '0.7rem', color: '#94a3b8', marginLeft: 'auto' }}>{(videoFile.size / 1024 / 1024).toFixed(1)} MB</span>
+                                                            </div>
+                                                            <video
+                                                                controls
+                                                                src={`http://localhost:3001/api/drive-file?path=${encodeURIComponent(videoFile.path)}`}
+                                                                style={{ width: '100%', borderRadius: '8px', maxHeight: '200px' }}
+                                                                preload="metadata"
+                                                            />
+                                                        </div>
+                                                    );
+                                                })()}
 
-                                                        <div style={{ display: 'flex', gap: '1rem', fontSize: '0.8rem', color: '#64748b', marginBottom: '1rem' }}>
-                                                            <a href={selectedVideo.audioUrl} download target="_blank" rel="noreferrer" style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', textDecoration: 'none', color: '#3b82f6' }}>
-                                                                ⬇️ Descargar MP3
+                                                {/* Infographic Preview */}
+                                                {(() => {
+                                                    const imgFile = Object.values(selectedVideo.artifactDownloads || {}).find(d => d.fileName?.endsWith('.png'));
+                                                    if (!imgFile) return null;
+                                                    return (
+                                                        <div style={{ background: 'white', borderRadius: '10px', padding: '1rem', border: '1px solid #e2e8f0' }}>
+                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                                                                <span style={{ fontSize: '1.2rem' }}>🧩</span>
+                                                                <span style={{ fontWeight: 600, fontSize: '0.85rem', color: '#334155' }}>Infografía</span>
+                                                                <span style={{ fontSize: '0.7rem', color: '#94a3b8', marginLeft: 'auto' }}>{(imgFile.size / 1024 / 1024).toFixed(1)} MB</span>
+                                                            </div>
+                                                            <img
+                                                                src={`http://localhost:3001/api/drive-file?path=${encodeURIComponent(imgFile.path)}`}
+                                                                alt="Infografía"
+                                                                style={{ width: '100%', borderRadius: '8px', cursor: 'pointer', maxHeight: '300px', objectFit: 'contain', background: '#f1f5f9' }}
+                                                                onClick={() => window.open(`http://localhost:3001/api/drive-file?path=${encodeURIComponent(imgFile.path)}`, '_blank')}
+                                                                title="Click para ver en tamaño completo"
+                                                            />
+                                                        </div>
+                                                    );
+                                                })()}
+
+                                                {/* Report Download */}
+                                                {(() => {
+                                                    const reportFile = Object.values(selectedVideo.artifactDownloads || {}).find(d => d.fileName?.endsWith('.docx') || d.fileName?.endsWith('.md'));
+                                                    if (!reportFile) return null;
+                                                    return (
+                                                        <div style={{ background: 'white', borderRadius: '10px', padding: '1rem', border: '1px solid #e2e8f0' }}>
+                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                                                                <span style={{ fontSize: '1.2rem' }}>📄</span>
+                                                                <span style={{ fontWeight: 600, fontSize: '0.85rem', color: '#334155' }}>Informe</span>
+                                                                <span style={{ fontSize: '0.7rem', color: '#94a3b8', marginLeft: 'auto' }}>{(reportFile.size / 1024).toFixed(0)} KB</span>
+                                                            </div>
+                                                            <p style={{ fontSize: '0.8rem', color: '#64748b', margin: '0 0 0.5rem 0' }}>{reportFile.title || reportFile.fileName}</p>
+                                                            <a
+                                                                href={`http://localhost:3001/api/drive-file?path=${encodeURIComponent(reportFile.path)}&download=true`}
+                                                                download={reportFile.fileName}
+                                                                style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '0.4rem 0.8rem', borderRadius: '6px', background: '#3b82f6', color: 'white', textDecoration: 'none', fontSize: '0.8rem', fontWeight: 500 }}
+                                                            >
+                                                                ⬇️ Descargar {reportFile.fileName?.endsWith('.docx') ? 'DOCX' : 'MD'}
                                                             </a>
-                                                            {selectedVideo.notebookId && (
-                                                                <a
-                                                                    href={`https://notebooklm.google.com/notebook/${selectedVideo.notebookId}${selectedVideo.artifactId ? `?audioArtifactId=${selectedVideo.artifactId}` : ''}`}
-                                                                    target="_blank"
-                                                                    rel="noreferrer"
-                                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', textDecoration: 'none', color: '#64748b' }}
-                                                                >
-                                                                    🧠 Fuente NotebookLM
-                                                                </a>
-                                                            )}
                                                         </div>
+                                                    );
+                                                })()}
+                                            </div>
 
-                                                        {/* TRANSCRIPTION SECTION */}
-                                                        <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '1rem' }}>
-                                                            <details>
-                                                                <summary style={{ cursor: 'pointer', fontWeight: '600', color: '#475569', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
-                                                                    📝 Ver Transcripción
-                                                                </summary>
-                                                                <div style={{
-                                                                    marginTop: '0.75rem',
-                                                                    maxHeight: '300px',
-                                                                    overflowY: 'auto',
-                                                                    padding: '1rem',
-                                                                    background: '#f8fafc',
-                                                                    borderRadius: '8px',
-                                                                    border: '1px solid #e2e8f0',
-                                                                    whiteSpace: 'pre-wrap',
-                                                                    fontSize: '0.9rem',
-                                                                    lineHeight: '1.6',
-                                                                    color: '#334155'
-                                                                }}>
-                                                                    {selectedVideo.transcription ? selectedVideo.transcription : (
-                                                                        <em style={{ color: '#94a3b8' }}>No hay transcripción disponible para este audio.</em>
-                                                                    )}
-                                                                </div>
-                                                            </details>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                /* VIEW 2: Audio is NOT hosted yet (show status + download actions) */
-                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
-                                                    {/* Status Indicator */}
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                                                        {selectedVideo.generationStatus === 'done' ? (
-                                                            <div style={{ color: '#166534', display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 'bold' }}>
-                                                                <input type="checkbox" checked readOnly style={{ accentColor: '#166534' }} />
-                                                                <span>Audio Listo en NotebookLM</span>
-                                                            </div>
-                                                        ) : (
-                                                            <span style={{ color: '#64748b', fontStyle: 'italic', fontSize: '0.9rem' }}>
-                                                                {selectedVideo.generationStatus === 'processing' ? '⏳ Generando audio...' : '⚠️ Audio no generado aún'}
-                                                            </span>
-                                                        )}
-                                                    </div>
-
-                                                    {/* Action Buttons Row */}
-                                                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                                                        {/* Link to NotebookLM */}
-                                                        <a
-                                                            href={`https://notebooklm.google.com/notebook/${selectedVideo.notebookId}${selectedVideo.artifactId ? `?audioArtifactId=${selectedVideo.artifactId}` : ''}`}
-                                                            target="_blank"
-                                                            rel="noopener noreferrer"
-                                                            className="btn btn-outline"
-                                                            style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem', textDecoration: 'none' }}
-                                                        >
-                                                            🧠 Abrir en NotebookLM
-                                                        </a>
-
-                                                        {/* DOWNLOAD BUTTON */}
-                                                        <button
-                                                            className="btn btn-primary"
-                                                            style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
-                                                            onClick={async (e) => {
-                                                                const btn = e.currentTarget;
-                                                                const originalText = btn.innerHTML; // Save icon too
-
-                                                                // Prevention double click
-                                                                if (btn.disabled) return;
-                                                                btn.disabled = true;
-                                                                btn.textContent = '⏳ Descargando...';
-
-                                                                try {
-                                                                    const bookId = selectedVideo.id ? String(selectedVideo.id).trim() : '';
-                                                                    const notebookId = selectedVideo.notebookId ? String(selectedVideo.notebookId).trim() : '';
-
-                                                                    // 1. Ping Check
-                                                                    try {
-                                                                        const ping = await fetch(`${API_BASE}/api/ping`);
-                                                                        if (!ping.ok) throw new Error(`Ping failed: ${ping.status}`);
-                                                                        await ping.json();
-                                                                    } catch (e) {
-                                                                        throw new Error("El servidor backend no responde (/api/ping). Asegúrate de que 'npm run dev' esté corriendo.");
-                                                                    }
-
-                                                                    // 2. Download Request
-                                                                    const res = await fetch(`${API_BASE}/api/download-upload-audio/${bookId}`, {
-                                                                        method: 'POST',
-                                                                        headers: { 'Content-Type': 'application/json' },
-                                                                        body: JSON.stringify({ notebookId: notebookId })
-                                                                    });
-
-                                                                    const data = await res.json();
-
-                                                                    if (res.ok && data.success) {
-                                                                        btn.textContent = '✅ ¡Guardado!';
-                                                                        alert(`¡Éxito completado!\n\nAudio alojado en Firebase.\nURL: ${data.audioUrl}`);
-
-                                                                        // Update UI immediately (show player)
-                                                                        setSelectedVideo({
-                                                                            ...selectedVideo,
-                                                                            audioUrl: data.audioUrl,
-                                                                            artifactId: data.artifactId,
-                                                                            transcription: data.transcription
-                                                                        });
-                                                                    } else {
-                                                                        throw new Error(data.error || 'Error desconocido del servidor');
-                                                                    }
-                                                                } catch (error) {
-                                                                    console.error(error);
-                                                                    alert("Error al descargar: " + error.message);
-                                                                    btn.innerHTML = originalText;
-                                                                    btn.disabled = false;
-                                                                }
-                                                            }}
-                                                        >
-                                                            💾 Descargar y Guardar Audio (Firebase)
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            )}
+                                            {/* Evaluation Actions */}
+                                            <div style={{ marginTop: '1rem', display: 'flex', gap: '0.75rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+                                                <span style={{ fontSize: '0.8rem', color: '#64748b', alignSelf: 'center' }}>¿Los contenidos son válidos?</span>
+                                                <button
+                                                    onClick={async () => {
+                                                        await updateDoc(doc(db, "books", selectedVideo.id), { contentApproved: true, approvedAt: new Date() });
+                                                        setSelectedVideo({ ...selectedVideo, contentApproved: true });
+                                                        alert('✅ Contenidos aprobados');
+                                                    }}
+                                                    style={{ padding: '0.4rem 1rem', borderRadius: '8px', border: 'none', background: selectedVideo.contentApproved ? '#16a34a' : '#dcfce7', color: selectedVideo.contentApproved ? 'white' : '#166534', fontWeight: 600, fontSize: '0.8rem', cursor: 'pointer' }}
+                                                >
+                                                    {selectedVideo.contentApproved ? '✅ Aprobados' : '👍 Aprobar'}
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        setActiveTab('search'); // Will switch to the generation config
+                                                        setOrchestrationStatus('idle'); // Force UI to allow regenerations
+                                                    }}
+                                                    style={{ padding: '0.4rem 1rem', borderRadius: '8px', border: '1px solid #f97316', background: 'white', color: '#f97316', fontWeight: 600, fontSize: '0.8rem', cursor: 'pointer' }}
+                                                >
+                                                    🔄 Regenerar
+                                                </button>
+                                                <button
+                                                    onClick={async (e) => {
+                                                        const btn = e.currentTarget;
+                                                        const originalText = btn.innerHTML;
+                                                        btn.innerHTML = '⏳ Descargando...';
+                                                        btn.disabled = true;
+                                                        try {
+                                                            const syncRes = await fetch(`${API_BASE}/api/process-artifacts/${selectedVideo.id}`, {
+                                                                method: 'POST',
+                                                                headers: { 'Content-Type': 'application/json' },
+                                                                body: JSON.stringify({
+                                                                    notebookId: selectedVideo.notebookId,
+                                                                    title: selectedVideo.title,
+                                                                    description: selectedVideo.summary
+                                                                })
+                                                            });
+                                                            if (syncRes.ok) {
+                                                                alert('✅ Artefactos descargados y sincronizados correctamente.');
+                                                            } else {
+                                                                alert('❌ Error al sincronizar los artefactos.');
+                                                            }
+                                                        } catch (err) {
+                                                            alert('❌ Error de red: ' + err.message);
+                                                        } finally {
+                                                            btn.innerHTML = originalText;
+                                                            btn.disabled = false;
+                                                        }
+                                                    }}
+                                                    style={{ padding: '0.4rem 1rem', borderRadius: '8px', border: '1px solid #3b82f6', background: 'white', color: '#3b82f6', fontWeight: 600, fontSize: '0.8rem', cursor: 'pointer', transition: 'all 0.2s ease' }}
+                                                    onMouseOver={(e) => { if (!e.currentTarget.disabled) { e.currentTarget.style.background = '#eff6ff'; } }}
+                                                    onMouseOut={(e) => { if (!e.currentTarget.disabled) { e.currentTarget.style.background = 'white'; } }}
+                                                >
+                                                    ⬇️ Forzar Descarga (Sync)
+                                                </button>
+                                            </div>
                                         </div>
                                     )}
 
+                                    {/* BOTTOM BAR */}
                                     <div style={{ marginTop: '2rem', display: 'flex', justifyContent: 'flex-end', gap: '1rem', paddingTop: '1rem', borderTop: '1px solid #f1f5f9' }}>
-                                        <button onClick={() => { setSelectedVideo(null); resetProcessing(); }} className="btn btn-outline" style={{ padding: '0.6rem 1.5rem' }}>Cancelar</button>
-                                        <button
-                                            className="btn btn-primary"
-                                            style={{ padding: '0.6rem 2rem', fontSize: '1rem', background: searchMode === 'notebooklm' ? 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)' : undefined }}
-                                            onClick={() => handleAccept(selectedVideo, selectedTopic, '', selectedLevel, aiSummary, rawTranscription, audioLength, isRecommended, isFavorite, isVisible)}
-                                            disabled={!selectedTopic}
-                                        >
-                                            {isPublishing ? 'Publicando...' : (searchMode === 'notebooklm' || selectedVideo.isNotebook ? '🚀 Generar Cuaderno IA' : 'Publicar Libro')}
-                                        </button>
+                                        <button onClick={() => { setSelectedVideo(null); resetProcessing(); }} className="btn btn-outline" style={{ padding: '0.6rem 1.5rem' }}>Cerrar</button>
                                     </div>
                                 </div>
                             </div>
@@ -1800,6 +2162,29 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                 }
             </div >
         </div >
+
+        {/* ── Widget flotante de progreso (persiste aunque el modal esté cerrado) ── */}
+        {showWidget && activeGenId && activeGenStatus !== 'idle' && (
+            <GenerationProgressWidget
+                status={activeGenStatus}
+                message={activeGenMessage}
+                title={activeGenTitle}
+                onClose={() => {
+                    setShowWidget(false);
+                    setActiveGenId(null);
+                    setActiveGenStatus('idle');
+                }}
+                onReopen={() => {
+                    const book = acceptedVideos.find(v => v.id === activeGenId);
+                    if (book) {
+                        setSelectedVideo(book);
+                        setSearchMode('notebooklm');
+                        setOrchestrationStatus(book.orchestrationStatus || 'idle');
+                    }
+                }}
+            />
+        )}
+        </>
     );
 };
 

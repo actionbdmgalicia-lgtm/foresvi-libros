@@ -27,10 +27,12 @@
   --text-secondary: #475569;
   --text-muted: #94a3b8;
 
-  --accent-primary: #2563eb;
-  /* FORESVI Primary Blue */
-  --accent-secondary: #204058;
-  /* FORESVI Secondary Blue */
+  --accent-primary: #003349;
+  /* FORESVI Azul corporativo */
+  --accent-secondary: #E25454;
+  /* FORESVI Rojo corporativo */
+  --accent-gray: #717B8D;
+  /* FORESVI Gris medio */
   --accent-gold: #f59e0b;
   /* VIP Gold */
 
@@ -39,7 +41,7 @@
 
   /* Gradients */
   --gradient-hero: linear-gradient(135deg, #f0f4ff 0%, #ffffff 100%);
-  --gradient-accent: linear-gradient(90deg, #202189 0%, #204058 100%);
+  --gradient-accent: linear-gradient(90deg, #003349 0%, #001f2e 100%);
   --gradient-gold: linear-gradient(135deg, #f59e0b 0%, #b45309 100%);
 
   /* Spacing */
@@ -114,13 +116,13 @@ button {
 .btn-primary {
   background: var(--accent-primary);
   color: white;
-  box-shadow: 0 4px 14px 0 rgba(32, 33, 137, 0.3);
+  box-shadow: 0 4px 14px 0 rgba(0, 51, 73, 0.35);
 }
 
 .btn-primary:hover {
-  background: #1a1b6e;
+  background: #001f2e;
   transform: translateY(-2px);
-  box-shadow: 0 6px 20px 0 rgba(32, 33, 137, 0.4);
+  box-shadow: 0 6px 20px 0 rgba(0, 51, 73, 0.5);
 }
 
 .btn-outline {
@@ -187,6 +189,12 @@ p {
   color: var(--text-secondary);
   font-size: 1.125rem;
   margin-bottom: var(--spacing-md);
+}
+
+/* Animación spinner del widget de progreso */
+@keyframes foresviSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
 
 /* Animations */
