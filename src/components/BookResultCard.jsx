@@ -1,6 +1,7 @@
 import React from 'react';
+import { getApiBase } from '../utils/api';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+const API_BASE = getApiBase();
 
 export default function BookResultCard({ libro, onSelect }) {
     const downloads = libro.artifactDownloads || {};

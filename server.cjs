@@ -60,7 +60,7 @@ app.use(express.json());
 // Explicit CORS Headers (Brute force fix)
 app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", "*");
-    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, x-foresvi-token");
     if (req.method === 'OPTIONS') {
         return res.sendStatus(200);
     }
@@ -72,6 +72,24 @@ app.use((req, res, next) => {
     console.log(`[REQUEST] ${req.method} ${req.url}`);
     next();
 });
+
+// ── Token de seguridad (solo activo si FORESVI_API_TOKEN está definido) ────────
+// Cuando el backend se expone a internet por un túnel, exige el header
+// 'x-foresvi-token' en todas las rutas /api excepto /api/health. En local, si la
+// variable no está definida, no se comprueba nada (retrocompatible).
+const FORESVI_API_TOKEN = (process.env.FORESVI_API_TOKEN || '').trim();
+if (FORESVI_API_TOKEN) {
+    console.log('[Security] Token de acceso ACTIVADO. Las rutas /api exigen x-foresvi-token.');
+    app.use((req, res, next) => {
+        if (!req.path.startsWith('/api/')) return next();
+        if (req.path === '/api/health') return next();
+        const provided = (req.headers['x-foresvi-token'] || '').trim();
+        if (provided && provided === FORESVI_API_TOKEN) return next();
+        return res.status(401).json({ error: 'No autorizado', details: 'Falta o es incorrecto el token de acceso (x-foresvi-token).' });
+    });
+} else {
+    console.log('[Security] Token de acceso DESACTIVADO (FORESVI_API_TOKEN no definido). Solo recomendado en local.');
+}
 
 // Path to the MCP executable (Validated in previous steps)
 const MCP_PATH = "/Users/maccuatro/.local/bin/notebooklm-mcp";
@@ -1142,7 +1160,8 @@ app.get('/api/check-artifacts/:notebookId', async (req, res) => {
         const audioArtifact = artifacts.find(a => a.type === 'audio' || a.type === 'audio_overview');
         const infographicArtifact = artifacts.find(a => a.type === 'infographic');
         const videoArtifact = artifacts.find(a => a.type === 'video' || a.type === 'video_overview');
-        const reportArtifact = artifacts.find(a => (a.title && a.title.includes('INFORME')) || a.type === 'report');
+        const reportArtifact = artifacts.find(a => a.type === 'report' || (a.title && a.title.includes('INFORME')));
+        const slideDeckArtifact = artifacts.find(a => a.type === 'slide_deck');
 
         // Helper function to normalize status
         const normalizeStatus = (artifact) => {
@@ -1165,7 +1184,7 @@ app.get('/api/check-artifacts/:notebookId', async (req, res) => {
             }
             if (['unknown', 'unavailable'].includes(status)) {
                 // "unknown" usually means completed but without full metadata
-                return artifact.audio_url || artifact.video_url || artifact.infographic_url ? 'completed' : 'unknown';
+                return artifact.audio_url || artifact.video_url || artifact.infographic_url || artifact.slide_deck_url ? 'completed' : 'unknown';
             }
 
             return status; // Return as-is if not recognized
@@ -1204,9 +1223,19 @@ app.get('/api/check-artifacts/:notebookId', async (req, res) => {
                 artifact_id: videoArtifact.artifact_id
             } : null,
             report: reportArtifact ? {
-                status: 'completed',
+                status: normalizeStatus(reportArtifact),
+                rawStatus: reportArtifact.status,
                 title: reportArtifact.title,
+                hasContent: !!reportArtifact.report_content,
+                artifact_id: reportArtifact.artifact_id,
                 url: `https://notebooklm.google.com/notebook/${notebookId}`
+            } : null,
+            slide_deck: slideDeckArtifact ? {
+                status: normalizeStatus(slideDeckArtifact),
+                rawStatus: slideDeckArtifact.status,
+                title: slideDeckArtifact.title,
+                url: slideDeckArtifact.slide_deck_url,
+                artifact_id: slideDeckArtifact.artifact_id
             } : null,
             allComplete: summary.completed === summary.total && summary.total > 0 && summary.in_progress === 0
         };
@@ -1215,6 +1244,8 @@ app.get('/api/check-artifacts/:notebookId', async (req, res) => {
         console.log(`  Audio: ${response.audio?.status || 'N/A'} (raw: ${response.audio?.rawStatus || 'N/A'})`);
         console.log(`  Infographic: ${response.infographic?.status || 'N/A'} (raw: ${response.infographic?.rawStatus || 'N/A'})`);
         console.log(`  Video: ${response.video?.status || 'N/A'} (raw: ${response.video?.rawStatus || 'N/A'})`);
+        console.log(`  Report: ${response.report?.status || 'N/A'}`);
+        console.log(`  Slide Deck: ${response.slide_deck?.status || 'N/A'}`);
         console.log(`  All Complete: ${response.allComplete}`);
 
         // Cache the response
@@ -1281,64 +1312,147 @@ app.post('/api/process-artifacts/:bookId', async (req, res) => {
             console.log(`[Process Artifacts] Created folder: ${folderPath}`);
         }
 
-        // 3. Download each completed artifact
+        // 3. Download each completed artifact using download_artifact
+        //    (unified MCP tool: downloads by notebook_id + artifact_type directly to output_path,
+        //     replacing the 9 legacy per-type download tools)
         const results = {};
-        const artifactTypes = [
-            { type: 'audio', ext: 'mp3', label: 'Audio Overview' },
-            { type: 'video', ext: 'mp4', label: 'Video Overview' },
-            { type: 'infographic', ext: 'png', label: 'Infografia' },
+
+        // Media artifacts that download_artifact can save to disk
+        const artifactTypeConfigs = [
+            { type: 'audio',      ext: 'mp3', label: 'Audio Overview' },
+            { type: 'video',      ext: 'mp4', label: 'Video Overview' },
+            { type: 'infographic',ext: 'png', label: 'Infografia'     },
+            { type: 'slide_deck', ext: 'pdf', label: 'Presentacion'   },
         ];
 
-        for (const { type, ext, label } of artifactTypes) {
+        for (const { type, ext, label } of artifactTypeConfigs) {
             const artifact = artifacts.find(a => a.type === type || a.type === `${type}_overview`);
 
-            if (artifact && artifact.status === 'completed') {
-                const fileName = `${folderName} - ${label}.${ext}`;
-                const filePath = path.join(folderPath, fileName);
+            if (!artifact) {
+                console.log(`[Process Artifacts] ℹ️ No ${type} artifact found`);
+                continue;
+            }
 
-                console.log(`[Process Artifacts] Downloading ${type} -> ${filePath}`);
-
-                try {
-                    const downloadRes = await runMCPTool('download_artifact', {
-                        notebook_id: notebookId,
-                        artifact_type: type,
-                        output_path: filePath,
-                        artifact_id: artifact.artifact_id || null
-                    }, 900000); // 15 mins timeout
-
-                    const downloadText = downloadRes.content ? downloadRes.content[0].text : '';
-                    let downloadData = null;
-                    try { downloadData = JSON.parse(downloadText); } catch (e) { }
-
-                    if (fs.existsSync(filePath)) {
-                        const stats = fs.statSync(filePath);
-                        results[type] = {
-                            status: 'downloaded',
-                            path: filePath,
-                            fileName: fileName,
-                            size: stats.size,
-                            artifact_id: artifact.artifact_id
-                        };
-                        console.log(`[Process Artifacts] ✅ ${label} downloaded (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
-                    } else {
-                        results[type] = {
-                            status: 'download_attempted',
-                            mcpResult: downloadText?.substring(0, 300),
-                            artifact_id: artifact.artifact_id
-                        };
-                        console.log(`[Process Artifacts] ⚠️ ${label} file not found at expected path. MCP: ${downloadText?.substring(0, 200)}`);
-                    }
-                } catch (dlErr) {
-                    results[type] = { status: 'error', error: dlErr.message };
-                    console.error(`[Process Artifacts] ❌ ${label} download failed: ${dlErr.message}`);
-                }
-            } else if (artifact) {
+            if (artifact.status !== 'completed') {
                 results[type] = { status: artifact.status, artifact_id: artifact.artifact_id };
                 console.log(`[Process Artifacts] ⏳ ${label} not ready (status: ${artifact.status})`);
+                continue;
+            }
+
+            const fileName = `${folderName} - ${label}.${ext}`;
+            const filePath = path.join(folderPath, fileName);
+            console.log(`[Process Artifacts] Downloading ${type} via download_artifact -> ${filePath}`);
+
+            try {
+                const downloadRes = await runMCPTool('download_artifact', {
+                    notebook_id: notebookId,
+                    artifact_type: type,
+                    output_path: filePath,
+                    artifact_id: artifact.artifact_id || undefined
+                }, 900000); // 15 min timeout (video can be large)
+
+                const downloadText = downloadRes.content ? downloadRes.content[0].text : '';
+                let downloadData = null;
+                try { downloadData = JSON.parse(downloadText); } catch (e) { }
+
+                // download_artifact writes the file directly to output_path; verify on disk.
+                if (fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
+                    const stats = fs.statSync(filePath);
+                    results[type] = {
+                        status: 'downloaded',
+                        path: filePath,
+                        fileName: fileName,
+                        size: stats.size,
+                        artifact_id: artifact.artifact_id
+                    };
+                    console.log(`[Process Artifacts] ✅ ${label} downloaded (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
+                } else {
+                    results[type] = {
+                        status: 'download_failed',
+                        error: downloadData?.error || downloadText?.substring(0, 200) || 'File not created',
+                        artifact_id: artifact.artifact_id
+                    };
+                    console.log(`[Process Artifacts] ⚠️ ${label} download_artifact returned: ${downloadText?.substring(0, 200)}`);
+                }
+            } catch (dlErr) {
+                results[type] = { status: 'error', error: dlErr.message };
+                console.error(`[Process Artifacts] ❌ ${label} download failed: ${dlErr.message}`);
             }
         }
 
-        // 3b. Extract notes/reports as .docx files and presentations as .pptx
+        // 3b. Handle report artifact (native studio artifact — content returned as text, not URL)
+        try {
+            const reportArtifact = artifacts.find(a => a.type === 'report' && a.status === 'completed');
+            if (reportArtifact && reportArtifact.report_content) {
+                console.log(`[Process Artifacts] Found completed report artifact. Saving as DOCX...`);
+                const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } = require('docx');
+
+                const reportContent = reportArtifact.report_content;
+                const reportTitle = reportArtifact.title || 'Informe NotebookLM';
+                const safeReportTitle = sanitizeFolderName(reportTitle);
+                const reportFileName = `${folderName} - Informe.docx`;
+                const reportFilePath = path.join(folderPath, reportFileName);
+
+                const paragraphs = reportContent.split('\n').map(line => {
+                    const trimmed = line.trim();
+                    if (trimmed.startsWith('### ')) {
+                        return new Paragraph({ text: trimmed.replace('### ', ''), heading: HeadingLevel.HEADING_3 });
+                    } else if (trimmed.startsWith('## ')) {
+                        return new Paragraph({ text: trimmed.replace('## ', ''), heading: HeadingLevel.HEADING_2 });
+                    } else if (trimmed.startsWith('# ')) {
+                        return new Paragraph({ text: trimmed.replace('# ', ''), heading: HeadingLevel.HEADING_1 });
+                    } else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+                        return new Paragraph({ children: [new TextRun(trimmed.substring(2))], bullet: { level: 0 } });
+                    } else if (trimmed === '') {
+                        return new Paragraph({ text: '' });
+                    }
+                    const runs = [];
+                    const parts = trimmed.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/);
+                    for (const part of parts) {
+                        if (part.startsWith('**') && part.endsWith('**')) {
+                            runs.push(new TextRun({ text: part.slice(2, -2), bold: true }));
+                        } else if (part.startsWith('*') && part.endsWith('*')) {
+                            runs.push(new TextRun({ text: part.slice(1, -1), italics: true }));
+                        } else if (part) {
+                            runs.push(new TextRun(part));
+                        }
+                    }
+                    return new Paragraph({ children: runs });
+                });
+
+                const doc = new Document({
+                    sections: [{
+                        properties: {},
+                        children: [
+                            new Paragraph({ text: reportTitle, heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
+                            new Paragraph({ children: [new TextRun({ text: `Generado por NotebookLM | ${new Date().toLocaleString('es-ES')}`, italics: true, size: 18, color: '888888' })] }),
+                            new Paragraph({ text: '' }),
+                            ...paragraphs
+                        ]
+                    }]
+                });
+
+                const buffer = await Packer.toBuffer(doc);
+                fs.writeFileSync(reportFilePath, buffer);
+                results['report'] = {
+                    status: 'downloaded',
+                    path: reportFilePath,
+                    fileName: reportFileName,
+                    size: buffer.length,
+                    artifact_id: reportArtifact.artifact_id,
+                    title: reportTitle
+                };
+                console.log(`[Process Artifacts] ✅ Report saved as DOCX: ${reportFileName} (${reportContent.length} chars)`);
+            } else if (artifacts.find(a => a.type === 'report')) {
+                const rArt = artifacts.find(a => a.type === 'report');
+                results['report'] = { status: rArt.status, artifact_id: rArt.artifact_id };
+                console.log(`[Process Artifacts] ⏳ Report not ready (status: ${rArt.status})`);
+            }
+        } catch (reportErr) {
+            console.error(`[Process Artifacts] ⚠️ Error processing report artifact: ${reportErr.message}`);
+        }
+
+        // 3c. Extract notes as .docx files (legacy: for notes created via notebook_query)
         try {
             console.log(`[Process Artifacts] Checking for notes/reports...`);
             const notesRes = await runMCPTool('note', { notebook_id: notebookId, action: 'list' });
@@ -1651,9 +1765,17 @@ app.post('/api/import-notebook', async (req, res) => {
         const nbInfo = await runMCPTool('notebook_get', { notebook_id: notebookId });
         console.log(`[Import Notebook] Notebook info:`, JSON.stringify(nbInfo).substring(0, 500));
 
+        // 🔍 DEBUG: Verify title extraction
         const notebookTitle = nbInfo?.notebook?.title || `Importado ${notebookId.substring(0, 8)}`;
+        console.log(`[Import Notebook] 🎯 TITLE EXTRACTED:`, {
+            extracted: nbInfo?.notebook?.title || 'NULL',
+            fallback: notebookTitle,
+            isValid: !!(notebookTitle && notebookTitle.trim().length > 0)
+        });
+
         const sourceCount = nbInfo?.notebook?.source_count || 0;
         const sources = nbInfo?.sources || [];
+        console.log(`[Import Notebook] Sources found: ${sourceCount}, count: ${sources.length}`);
 
         // 2. Get studio status (what artifacts exist)
         console.log(`[Import Notebook] Checking studio artifacts...`);
@@ -1803,8 +1925,11 @@ app.post('/api/import-notebook', async (req, res) => {
         }
 
         // 7. Save to Firestore
+        const finalTitle = `Investigación: ${notebookTitle}`;
+        console.log(`[Import Notebook] 💾 PREPARING TO SAVE - Title will be:`, finalTitle);
+
         const bookData = {
-            title: `Investigación: ${notebookTitle}`,
+            title: finalTitle,
             notebookId: notebookId,
             notebookUrl: `https://notebooklm.google.com/notebook/${notebookId}`,
             sourceType: 'notebooklm',
@@ -1816,6 +1941,7 @@ app.post('/api/import-notebook', async (req, res) => {
             summary: summary,
             topicId: topicId || '',
             level: level || 'Iniciación',
+            tema_piramide: topicId || '1', // Default to "1" (Comercio)
             isVisible: true,
             isRecommended: false,
             isFavorite: false,
@@ -1830,19 +1956,36 @@ app.post('/api/import-notebook', async (req, res) => {
         };
 
         await admin.firestore().collection('books').doc(bookId).set(bookData);
-        console.log(`[Import Notebook] ✅ Book saved to Firestore: ${bookId}`);
+        console.log(`[Import Notebook] ✅ Book saved to Firestore:`, {
+            bookId,
+            title: bookData.title,
+            notebookId: bookData.notebookId,
+            sourcesCount: bookData.sourceCount
+        });
 
         console.log(`[Import Notebook] Complete! ${downloadedCount} artifacts imported.`);
-        res.json({
+
+        // 📤 FINAL RESPONSE - ensure all data is included
+        const responseData = {
             success: true,
             bookId,
             title: bookData.title,
+            notebookTitle: notebookTitle, // Include original notebook title for debugging
             downloaded: downloadedCount,
             total: totalArtifacts,
             artifacts: results,
             sources: sources.map(s => ({ title: s.title, type: s.source_type_name })),
             summary: summary.substring(0, 500)
+        };
+
+        console.log(`[Import Notebook] 📤 SENDING RESPONSE:`, {
+            success: responseData.success,
+            bookId: responseData.bookId,
+            title: responseData.title,
+            downloaded: responseData.downloaded
         });
+
+        res.json(responseData);
 
     } catch (error) {
         console.error('[Import Notebook] Error:', error.message);
@@ -1958,7 +2101,33 @@ app.get('/api/drive-file', (req, res) => {
 });
 
 app.post('/api/generate-orchestrated', async (req, res) => {
-    const { bookId, title, sources, config, searchQuery } = req.body;
+    const { bookId, title, sources, config, searchQuery, customPrompts } = req.body;
+
+    // Merge customPrompts into config if provided
+    let mergedConfig = { ...config };
+    if (customPrompts) {
+        console.log('[Orchestrator] Using custom prompts:', Object.keys(customPrompts));
+        // Override default prompts with custom ones if provided
+        if (customPrompts.audio) {
+            mergedConfig.audio = { ...mergedConfig.audio, foco: customPrompts.audio };
+        }
+        if (customPrompts.video) {
+            mergedConfig.video = { ...mergedConfig.video, foco: customPrompts.video };
+        }
+        if (customPrompts.infografia) {
+            mergedConfig.infografia = { ...mergedConfig.infografia, descripcion: customPrompts.infografia };
+        }
+        if (customPrompts.informe) {
+            mergedConfig.informe = { ...mergedConfig.informe, foco: customPrompts.informe };
+        }
+        if (customPrompts.presentacion) {
+            mergedConfig.presentacion = { ...mergedConfig.presentacion, foco: customPrompts.presentacion };
+        }
+    }
+
+    // DEBUG: Log config structure
+    console.log('[Orchestrator] Merged Config keys:', Object.keys(mergedConfig));
+    console.log('[Orchestrator] presentacion config:', mergedConfig.presentacion ? 'EXISTS' : 'MISSING');
 
     // Create Job
     const jobId = Math.random().toString(36).substring(7);
@@ -2109,7 +2278,7 @@ app.post('/api/generate-orchestrated', async (req, res) => {
             // 2. Audio Generation
             log('Step 2: Generate Audio Overview...');
             // await updateDB('generating_audio'); // Keep status
-            const focusPrompt = PROMPTS.audio(config, title);
+            const focusPrompt = PROMPTS.audio(mergedConfig, title);
 
             try {
                 // Use unified artifact tool
@@ -2117,7 +2286,7 @@ app.post('/api/generate-orchestrated', async (req, res) => {
                     notebook_id: notebookId,
                     artifact_type: 'audio',
                     focus_prompt: focusPrompt,
-                    language: config.audio?.idioma === 'Inglés' ? 'en' : 'es',
+                    language: mergedConfig.audio?.idioma === 'Inglés' ? 'en' : 'es',
                     confirm: true
                 });
 
@@ -2142,13 +2311,13 @@ app.post('/api/generate-orchestrated', async (req, res) => {
                 const infographicRes = await runMCPTool('studio_create', {
                     notebook_id: jobs[jobId].notebookId,
                     artifact_type: 'infographic',
-                    language: config.infografia.idioma === 'Español' ? 'es' :
-                        config.infografia.idioma === 'Inglés' ? 'en' : 'fr',
-                    orientation: config.infografia.orientacion === 'Cuadrado' ? 'square' :
-                        config.infografia.orientacion === 'Vertical' ? 'portrait' : 'landscape',
-                    detail_level: config.infografia.nivel_detalle === 'Conciso' ? 'concise' :
-                        config.infografia.nivel_detalle === 'Detallado' ? 'detailed' : 'standard',
-                    focus_prompt: config.infografia.descripcion || '',
+                    language: mergedConfig.infografia.idioma === 'Español' ? 'es' :
+                        mergedConfig.infografia.idioma === 'Inglés' ? 'en' : 'fr',
+                    orientation: mergedConfig.infografia.orientacion === 'Cuadrado' ? 'square' :
+                        mergedConfig.infografia.orientacion === 'Vertical' ? 'portrait' : 'landscape',
+                    detail_level: mergedConfig.infografia.nivel_detalle === 'Conciso' ? 'concise' :
+                        mergedConfig.infografia.nivel_detalle === 'Detallado' ? 'detailed' : 'standard',
+                    focus_prompt: mergedConfig.infografia.descripcion || '',
                     confirm: true
                 });
 
@@ -2160,95 +2329,103 @@ app.post('/api/generate-orchestrated', async (req, res) => {
                 // Continue anyway - infographic is optional
             }
 
-            // 3.5 Report Generation
-            log('Step 3.5: Generating Real Report via AI...');
+            // 3.5 Report Generation — usando report_create (herramienta nativa MCP)
+            log('Step 3.5: Generating Report via native MCP report_create...');
             await updateDB('generating_report');
 
-            if (config.informe) {
+            if (mergedConfig.informe) {
                 try {
-                    const reportPrompt = `Actúa como un analista experto. Genera un informe ${config.informe.tipo} en ${config.informe.idioma} sobre este cuaderno. ` +
-                        `Foco específico: ${config.informe.foco}. ` +
-                        `ESTRUCTURA OBLIGATORIA: # RESUMEN EJECUTIVO, ## ANÁLISIS DETALLADO, ## PUNTOS CLAVE, ## CONCLUSIONES Y RECOMENDACIONES.`;
+                    // Mapear idioma a BCP-47
+                    const reportLang = mergedConfig.informe.idioma === 'Español' ? 'es'
+                        : mergedConfig.informe.idioma === 'Inglés' ? 'en'
+                        : mergedConfig.informe.idioma === 'Francés' ? 'fr'
+                        : mergedConfig.informe.idioma === 'Alemán' ? 'de'
+                        : 'es';
 
-                    // Generate content via query
-                    const queryRes = await runMCPTool('notebook_query', {
+                    // Mapear tipo a formato de report_create
+                    // "Ejecutivo" → "Briefing Doc", "Estudio" → "Study Guide", custom → "Create Your Own"
+                    const tipoInforme = mergedConfig.informe.tipo || 'Ejecutivo';
+                    let reportFormat = 'Briefing Doc';
+                    let customPrompt = '';
+                    if (tipoInforme === 'Estudio' || tipoInforme === 'Study Guide') {
+                        reportFormat = 'Study Guide';
+                    } else if (tipoInforme === 'Blog') {
+                        reportFormat = 'Blog Post';
+                    } else if (mergedConfig.informe.foco && mergedConfig.informe.foco.trim()) {
+                        // Si hay un foco específico, usar Create Your Own para respetar el prompt
+                        reportFormat = 'Create Your Own';
+                        customPrompt = mergedConfig.informe.foco;
+                    }
+
+                    log(`[Report] Using studio_create (report): format="${reportFormat}", lang="${reportLang}"`);
+                    const reportRes = await runMCPTool('studio_create', {
                         notebook_id: jobs[jobId].notebookId,
-                        query: reportPrompt
+                        artifact_type: 'report',
+                        report_format: reportFormat,
+                        custom_prompt: customPrompt,
+                        language: reportLang,
+                        confirm: true
                     });
 
-                    const reportText = queryRes.content?.[0]?.text || 'No se pudo generar contenido para el informe.';
-                    const reportTitle = `INFORME ${config.informe.tipo.toUpperCase()} - ${title}`;
-
-                    // Save the generated report as a note so it appears as an artifact
-                    await runMCPTool('note', {
-                        notebook_id: jobs[jobId].notebookId,
-                        action: 'create',
-                        title: reportTitle,
-                        content: reportText
-                    });
-
-                    log('✅ Report generated and saved successfully.');
+                    const reportResText = reportRes?.content?.[0]?.text || JSON.stringify(reportRes);
+                    log(`✅ Report creation requested: ${reportResText.substring(0, 200)}`);
                 } catch (e) {
                     log(`⚠️ Report generation failed: ${e.message}`);
                 }
             }
 
-            // 3.6 Presentation Generation
-            log('Step 3.6: Generating Presentation content via AI...');
+            // 3.6 Presentation Generation — usando slide_deck_create (herramienta nativa MCP)
+            log('Step 3.6: Generating Slide Deck via native MCP slide_deck_create...');
             await updateDB('generating_presentation');
 
-            if (config.presentacion) {
+            log(`[DEBUG] mergedConfig.presentacion exists: ${!!mergedConfig.presentacion}`);
+            log(`[DEBUG] mergedConfig.presentacion value: ${JSON.stringify(mergedConfig.presentacion)}`);
+
+            if (mergedConfig.presentacion) {
                 try {
-                    const duracion = config.presentacion.duracion || 'Corto';
-                    const numSlides = duracion === 'Corto' ? '8-10' : duracion === 'Medio' ? '12-15' : '18-20';
-                    const presPrompt = `Actúa como un diseñador de presentaciones experto. Genera el contenido estructurado para una presentación de ${numSlides} diapositivas en ${config.presentacion.idioma} sobre este tema.
-Formato: ${config.presentacion.formato || 'Presentación detallada'}.
-Objetivo: ${config.presentacion.foco || 'Crea una presentación que resuma las principales ideas del libro para que un dueño o gerente de una PYME pueda aplicar en su entorno laboral.'}
+                    // Mapear formato a valores válidos del MCP: detailed_deck | presenter_slides
+                    const formato = mergedConfig.presentacion.formato || 'Presentación detallada';
+                    const slideFormat = formato.toLowerCase().includes('presenter') || formato.toLowerCase().includes('presentador')
+                        ? 'presenter_slides'
+                        : 'detailed_deck';
 
-FORMATO OBLIGATORIO — usa EXACTAMENTE esta estructura para cada diapositiva:
-## DIAPOSITIVA 1: TÍTULO
-[Título principal]
-[Subtítulo o descripción breve]
+                    // Mapear duración: short | default
+                    const duracion = mergedConfig.presentacion.duracion || 'Corto';
+                    const slideLength = duracion === 'Corto' ? 'short' : 'default';
 
-## DIAPOSITIVA 2: INTRODUCCIÓN
-- [Punto clave 1]
-- [Punto clave 2]
-- [Punto clave 3]
+                    // Mapear idioma a BCP-47
+                    const slideLang = mergedConfig.presentacion.idioma === 'Español' ? 'es'
+                        : mergedConfig.presentacion.idioma === 'Inglés' ? 'en'
+                        : mergedConfig.presentacion.idioma === 'Francés' ? 'fr'
+                        : mergedConfig.presentacion.idioma === 'Alemán' ? 'de'
+                        : 'es';
 
-## DIAPOSITIVA N: [TEMA PRINCIPAL]
-- [Punto 1]
-- [Punto 2]
-- [Punto 3]
+                    const DEFAULT_SLIDE_FOCUS = 'Crea una presentación que resuma las principales ideas del libro para que un dueño o gerente de una PYME pueda aplicar en su entorno laboral. Utiliza ejemplos prácticos e imágenes unidas a los ejemplos utilizados en el libro, principalmente en el texto original del libro.';
+                    const focusPrompt = mergedConfig.presentacion.foco || DEFAULT_SLIDE_FOCUS;
 
-## DIAPOSITIVA FINAL: CONCLUSIONES Y PRÓXIMOS PASOS
-- [Conclusión 1]
-- [Conclusión 2]
-- [Llamada a la acción]
+                    log(`[Slide Deck] Using studio_create (slide_deck): format="${slideFormat}", length="${slideLength}", lang="${slideLang}"`);
+                    log(`[Slide Deck] focus_prompt: ${focusPrompt.substring(0, 120)}...`);
+                    log(`[Slide Deck] notebook_id: ${jobs[jobId].notebookId}`);
 
-Sé concreto, usa lenguaje ejecutivo y enfócate en puntos accionables. Máximo 4-5 puntos por diapositiva.`;
-
-                    const queryRes = await runMCPTool('notebook_query', {
+                    const slideRes = await runMCPTool('studio_create', {
                         notebook_id: jobs[jobId].notebookId,
-                        query: presPrompt
+                        artifact_type: 'slide_deck',
+                        slide_format: slideFormat,
+                        slide_length: slideLength,
+                        language: slideLang,
+                        focus_prompt: focusPrompt,
+                        confirm: true
                     });
 
-                    const presContent = queryRes.content?.[0]?.text || '';
-                    const presNoteTitle = `PRESENTACIÓN ${(config.presentacion.formato || 'DETALLADA').replace(/[^A-Z0-9]/g, '').toUpperCase()} - ${title}`;
-
-                    if (presContent.length > 100) {
-                        await runMCPTool('note', {
-                            notebook_id: jobs[jobId].notebookId,
-                            action: 'create',
-                            title: presNoteTitle,
-                            content: presContent
-                        });
-                        log('✅ Presentation content generated and saved as note.');
-                    } else {
-                        log('⚠️ Presentation content too short, skipping note creation.');
-                    }
+                    const slideResText = slideRes?.content?.[0]?.text || JSON.stringify(slideRes);
+                    log(`✅ Slide deck creation requested: ${slideResText.substring(0, 200)}`);
+                    console.log(`[slide_deck_create RAW]`, slideResText.slice(0, 1000));
                 } catch (e) {
-                    log(`⚠️ Presentation generation failed: ${e.message}`);
+                    log(`❌ CRITICAL: Slide deck generation failed: ${e.message}`);
+                    console.error(`[slide_deck_create ERROR FULL]`, e);
                 }
+            } else {
+                log(`⚠️ WARNING: mergedConfig.presentacion not found - skipping slide deck generation`);
             }
 
             // 4. Video Overview Generation (REAL MCP TOOL)

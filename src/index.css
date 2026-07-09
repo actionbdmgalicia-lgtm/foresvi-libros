@@ -422,4 +422,67 @@ p {
   .artifact-button-label {
     font-size: 0.6rem;
   }
+
+  /* Global scale-down for tablet/phone */
+  .container {
+    padding: 0 1rem;
+  }
+
+  .card {
+    padding: 1.25rem;
+    border-radius: 12px;
+  }
+
+  h1 {
+    font-size: 2.25rem;
+  }
+
+  h2 {
+    font-size: 1.75rem;
+    margin-bottom: 1.25rem;
+  }
+
+  h3 {
+    font-size: 1.25rem;
+  }
+
+  p {
+    font-size: 1rem;
+  }
+
+  .search-panel {
+    padding: 1.25rem;
+  }
+}
+
+/* Phones (narrow) */
+@media (max-width: 480px) {
+  .container {
+    padding: 0 0.75rem;
+  }
+
+  .card {
+    padding: 1rem;
+    border-radius: 10px;
+  }
+
+  h1 {
+    font-size: 1.85rem;
+  }
+
+  h2 {
+    font-size: 1.5rem;
+  }
+
+  .search-panel {
+    padding: 1rem;
+  }
+}
+
+/* Prevent horizontal overflow app-wide on small screens */
+@media (max-width: 768px) {
+  html, body, #root {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
 }

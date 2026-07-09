@@ -1,16 +1,19 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import ReactPlayer from 'react-player';
 // Version: 1.3.0 - Build: 2026-03-06 - Added: Knowledge Pyramid + Advanced Search + Auto Hashtags
 import GenerationConfigPanel from '../components/GenerationConfigPanel';
 import GenerationProgressWidget from '../components/GenerationProgressWidget';
 import PyramidaConocimiento from '../components/PyramidaConocimiento';
 import AdvancedSearch from '../components/AdvancedSearch';
+import useIsMobile from '../hooks/useIsMobile';
+import { getApiBase, getApiToken, setApiConfig } from '../utils/api';
+import { searchBookImage } from '../utils/imageSearch';
 import { db } from '../firebase';
 import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc, setDoc, query, where, orderBy, limit, deleteField, onSnapshot } from "firebase/firestore";
 
 const YOUTUBE_API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY;
 const OPENAI_API_KEY = import.meta.env.VITE_OPENAI_API_KEY;
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+const API_BASE = getApiBase();
 
 // OpenAI Service
 const callOpenAI = async (prompt) => {
@@ -185,6 +188,21 @@ const generateHashtags = (title, summary = '', temaPiramide = null) => {
 };
 
 const AdminDashboard = () => {
+    // Responsive
+    const isMobile = useIsMobile();        // <= 768px (tablet/móvil)
+    const isPhone = useIsMobile(480);      // <= 480px (móvil estrecho)
+
+    // Config de conexión al backend (editable en caliente desde Ajustes)
+    const [apiBaseInput, setApiBaseInput] = useState(getApiBase());
+    const [apiTokenInput, setApiTokenInput] = useState(getApiToken());
+    const [apiSaveMsg, setApiSaveMsg] = useState('');
+
+    const handleSaveApiConfig = () => {
+        setApiConfig({ base: apiBaseInput, token: apiTokenInput });
+        setApiSaveMsg('✅ Guardado. Recargando para aplicar...');
+        setTimeout(() => window.location.reload(), 700);
+    };
+
     // State
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState([]);
@@ -279,6 +297,14 @@ const AdminDashboard = () => {
     // Uploaded File Sources (PDFs, EPUBs)
     const [uploadedFiles, setUploadedFiles] = useState([]);
 
+    // Custom Prompts for Regeneration
+    const [customPrompts, setCustomPrompts] = useState({});
+
+    // Book Title Edit State
+    const [bookTitleBeingEdited, setBookTitleBeingEdited] = useState('');
+    const [bookTitleSaveStatus, setBookTitleSaveStatus] = useState('idle'); // idle, saving, saved
+    const titleSaveTimeoutRef = useRef(null);
+
     // Import Notebook State
     const [importInput, setImportInput] = useState('');
     const [importStatus, setImportStatus] = useState('idle');
@@ -297,6 +323,19 @@ const AdminDashboard = () => {
     const [knowledgeBaseDescription, setKnowledgeBaseDescription] = useState('Sistema de organización de conocimiento empresarial');
     const [knowledgeBaseEditing, setKnowledgeBaseEditing] = useState(false);
     const [knowledgeBaseChanged, setKnowledgeBaseChanged] = useState(false);
+
+    // Calcular libros por tema (useMemo para optimización)
+    const librosPorTema = useMemo(() => {
+        const grouped = {};
+        PIRAMIDE_TEMAS.forEach(tema => {
+            grouped[tema.nivel] = acceptedVideos.filter(l => {
+                // Comparar como número o string
+                const bookTema = l.tema_piramide;
+                return bookTema == tema.nivel || bookTema === String(tema.nivel);
+            });
+        });
+        return grouped;
+    }, [acceptedVideos, PIRAMIDE_TEMAS]);
 
     // Orchestrated Generation Launch
     const handleLaunchGeneration = async () => {
@@ -621,6 +660,42 @@ const AdminDashboard = () => {
         }
     }, [topics, selectedTopic]);
 
+    // Auto-search book images for books without image
+    useEffect(() => {
+        const searchMissingImages = async () => {
+            const booksWithoutImage = acceptedVideos.filter(book => !book.bookImage && book.title);
+
+            for (const book of booksWithoutImage) {
+                try {
+                    console.log(`🔍 Buscando imagen para: ${book.title}`);
+                    const imageUrl = await searchBookImage(book.title, book);
+
+                    if (imageUrl) {
+                        // Manejar fallback a infografía
+                        let urlToSave = imageUrl;
+                        if (imageUrl.startsWith('INFOGRAPHIC:')) {
+                            console.log(`📊 Usando infografía como portada`);
+                            urlToSave = `http://localhost:3001/api/drive-file?path=${encodeURIComponent(imageUrl.replace('INFOGRAPHIC:', ''))}`;
+                        }
+
+                        await updateDoc(doc(db, "books", book.id), {
+                            bookImage: urlToSave
+                        });
+                        console.log(`✅ Imagen guardada para: ${book.title}`);
+                    }
+                } catch (error) {
+                    console.warn(`⚠️ Error buscando imagen para ${book.title}:`, error.message);
+                }
+                // Delay to avoid API rate limiting
+                await new Promise(r => setTimeout(r, 500));
+            }
+        };
+
+        if (acceptedVideos.length > 0) {
+            searchMissingImages();
+        }
+    }, []); // Run only once on mount
+
     // ============================================================================
     // Polling para verificar artefactos de NotebookLM (V2: Drive + Roadmap)
     // ============================================================================
@@ -799,7 +874,7 @@ const AdminDashboard = () => {
                     body: JSON.stringify({
                         title: video.title || searchQuery,
                         description: video.description || `Investigación sobre ${searchQuery}`,
-                        options: generationOptions,
+                        options: generationConfig,
                         sources: sources,
                         apiKey: import.meta.env.VITE_OPENAI_API_KEY // Pass API Key for Image Gen
                     })
@@ -832,7 +907,7 @@ const AdminDashboard = () => {
             isVisible: visible,
             hasAudio: true,
             sourceType: video.isNotebook ? 'notebooklm' : 'youtube',
-            generationFlags: video.isNotebook ? generationOptions : null,
+            generationFlags: video.isNotebook ? generationConfig : null,
             generationJobId: bridgeJobId,
             generationStatus: generationStatus,
             generationProgress: 0,
@@ -921,7 +996,7 @@ const AdminDashboard = () => {
                 body: JSON.stringify({
                     title: video.title,
                     description: video.description,
-                    options: video.generationFlags || generationOptions,
+                    options: video.generationFlags || generationConfig,
                     sources: video.sources || [],
                     apiKey: import.meta.env.VITE_OPENAI_API_KEY
                 })
@@ -944,6 +1019,100 @@ const AdminDashboard = () => {
         }
     };
 
+    // Callback para asignar tema a un libro desde "Pendiente de Asignar"
+    const handleUpdateBookTema = async (bookId, tema) => {
+        try {
+            // Buscar el libro para obtener información adicional si es necesario
+            const bookToUpdate = acceptedVideos.find(b => b.id === bookId);
+            if (!bookToUpdate) {
+                throw new Error("Libro no encontrado");
+            }
+
+            // Actualizar el documento en Firestore
+            await updateDoc(doc(db, "books", bookId), {
+                tema_piramide: tema,
+                updatedAt: new Date().toISOString()
+            });
+
+            console.log(`✅ Libro "${bookToUpdate.title}" asignado a tema ${tema}`);
+            return { success: true };
+        } catch (error) {
+            console.error("Error actualizando tema del libro:", error);
+            throw error;
+        }
+    };
+
+    // Función para actualizar descripción de tema en Firestore
+    const handleUpdateThemeDescription = async (tema, newDescription) => {
+        try {
+            // Validación
+            if (!newDescription || newDescription.trim().length === 0) {
+                alert('La descripción no puede estar vacía');
+                return;
+            }
+
+            if (newDescription.length > 500) {
+                alert('La descripción no puede exceder 500 caracteres');
+                return;
+            }
+
+            // Actualizar en el array local (PIRAMIDE_TEMAS)
+            const temaIndex = PIRAMIDE_TEMAS.findIndex(t => t.nivel === tema.nivel);
+            if (temaIndex !== -1) {
+                PIRAMIDE_TEMAS[temaIndex].descripcion = newDescription;
+                // Trigger re-render (forzar actualización de estado)
+                setSelectedPiramidaTema({ ...tema, descripcion: newDescription });
+
+                // Log de confirmación
+                console.log(`✅ Descripción actualizada para tema: ${tema.nombre}`);
+                alert('✅ Descripción actualizada correctamente');
+            }
+        } catch (error) {
+            console.error("Error actualizando descripción del tema:", error);
+            alert('❌ Error al actualizar la descripción');
+        }
+    };
+
+    // Función para guardar el título del libro con debounce
+    const handleSaveBookTitle = async (bookId, newTitle) => {
+        if (!newTitle || !newTitle.trim()) {
+            return;
+        }
+
+        try {
+            setBookTitleSaveStatus('saving');
+
+            await updateDoc(doc(db, "books", bookId), {
+                title: newTitle.trim()
+            });
+
+            setBookTitleSaveStatus('saved');
+            console.log(`✅ Título guardado: ${newTitle}`);
+
+            // Revertir a estado "idle" después de 2 segundos
+            setTimeout(() => {
+                setBookTitleSaveStatus('idle');
+            }, 2000);
+        } catch (error) {
+            console.error('Error guardando título:', error);
+            setBookTitleSaveStatus('idle');
+        }
+    };
+
+    // Manejar cambio de título con debounce
+    const handleBookTitleChange = (bookId, newTitle) => {
+        setBookTitleBeingEdited(newTitle);
+
+        // Limpiar timeout anterior
+        if (titleSaveTimeoutRef.current) {
+            clearTimeout(titleSaveTimeoutRef.current);
+        }
+
+        // Guardar después de 1.5 segundos de inactividad
+        titleSaveTimeoutRef.current = setTimeout(() => {
+            handleSaveBookTitle(bookId, newTitle);
+        }, 1500);
+    };
 
     const addTopic = async (name) => {
         try {
@@ -1017,9 +1186,9 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
         <>
         <div style={{ paddingTop: '60px', minHeight: '100vh', background: 'var(--bg-secondary)' }}>
             <div className="container" style={{ maxWidth: '1400px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', padding: '1rem 0' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <h2 style={{ margin: 0, fontSize: '1.8rem' }}>FORESVI Libros <span style={{ fontSize: '0.75rem', opacity: 0.4, fontWeight: 400 }}>v3.0</span></h2>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', padding: '1rem 0', flexWrap: 'wrap', gap: '0.75rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                        <h2 style={{ margin: 0, fontSize: isMobile ? '1.4rem' : '1.8rem' }}>FORESVI Libros <span style={{ fontSize: '0.75rem', opacity: 0.4, fontWeight: 400 }}>v3.0</span></h2>
                         {/* NotebookLM Auth Badge */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                             <div style={{
@@ -1070,7 +1239,7 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                     <div className="card" style={{ padding: '2rem', maxWidth: '1000px', margin: '0 auto' }}>
                         <h2 style={{ borderBottom: '2px solid #e2e8f0', paddingBottom: '1rem', marginBottom: '2rem' }}>📖 Guía de Uso del Panel de Expertos v4</h2>
 
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '2rem' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(300px, 100%), 1fr))', gap: '2rem' }}>
 
                             {/* SECTION 1: WORKFLOW */}
                             <div>
@@ -1127,7 +1296,7 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                             {/* SECTION 3: YOUTUBE & DRIVE */}
                             <div style={{ gridColumn: '1 / -1', background: '#eef2ff', padding: '1.5rem', borderRadius: '12px', marginTop: '1rem' }}>
                                 <h3 style={{ color: '#4f46e5', margin: '0 0 1rem 0' }}>📺 Gestión de YouTube vs Drive</h3>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? '1rem' : '2rem' }}>
                                     <div>
                                         <strong>📂 Google Drive (Almacenamiento)</strong>
                                         <p style={{ fontSize: '0.9rem', color: '#4338ca', marginTop: '0.5rem' }}>
@@ -1422,14 +1591,14 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
 
                         {searchMode !== 'import' && (
                             <div className="card" style={{ padding: '0.75rem', marginBottom: '1rem', border: searchMode === 'notebooklm' ? '2px solid #3b82f6' : '1px solid var(--border-subtle)' }}>
-                                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
                                     <input
                                         type="text"
                                         placeholder={searchMode === 'youtube' ? "Pega un enlace de YouTube o busca temas técnicos..." : "Introduce un tema complejo para investigación profunda..."}
                                         value={searchQuery}
                                         onChange={(e) => setSearchQuery(e.target.value)}
                                         onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
-                                        style={{ flex: 1, padding: '0.8rem 1rem', borderRadius: '8px', border: '1px solid var(--border-subtle)', outline: 'none', fontSize: '1rem' }}
+                                        style={{ flex: 1, minWidth: isPhone ? '100%' : 180, padding: '0.8rem 1rem', borderRadius: '8px', border: '1px solid var(--border-subtle)', outline: 'none', fontSize: '1rem', boxSizing: 'border-box' }}
                                     />
                                     <button onClick={() => setSearchQuery('')} className="btn btn-outline" style={{ padding: '0.6rem 1rem' }}>Limpiar</button>
                                     <button onClick={handleSearch} className="btn btn-primary" style={{ padding: '0.6rem 1.5rem', background: searchMode === 'notebooklm' ? 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)' : undefined }}>
@@ -1472,7 +1641,7 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
 
                         {/* RESULTADOS */}
                         {searchMode !== 'import' && (<>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1rem' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))', gap: '1rem' }}>
                                 {searchResults.map((video) => {
                                     const stars = calculateStars(video.views);
                                     const isSelected = selectedSources.some(s => s.id === video.id);
@@ -1588,10 +1757,11 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                             {/* FLOATING ACTION BAR FOR NOTEBOOKLM */}
                             {searchMode === 'notebooklm' && selectedSources.length > 0 && (
                                 <div style={{
-                                    position: 'fixed', bottom: '40px', left: '50%', transform: 'translateX(-50%)',
-                                    background: 'white', padding: '1rem 2rem', borderRadius: '50px',
+                                    position: 'fixed', bottom: isMobile ? '20px' : '40px', left: '50%', transform: 'translateX(-50%)',
+                                    background: 'white', padding: isMobile ? '0.85rem 1.25rem' : '1rem 2rem', borderRadius: isMobile ? '20px' : '50px',
                                     boxShadow: '0 10px 30px rgba(0,0,0,0.2)', border: '1px solid var(--border-subtle)',
-                                    display: 'flex', alignItems: 'center', gap: '1.5rem', zIndex: 9999,
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '1rem', zIndex: 9999,
+                                    flexWrap: 'wrap', maxWidth: 'calc(100vw - 24px)',
                                     animation: 'slideUp 0.3s ease-out'
                                 }}>
                                     <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -1734,23 +1904,29 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                                         borderRadius: 12,
                                         border: `1px solid ${isComplete ? '#bbf7d0' : isFailed ? '#fca5a5' : '#e2e8f0'}`,
                                         borderLeft: `4px solid ${accentColor}`,
-                                        padding: '14px 18px',
+                                        padding: '10px 14px',
                                         fontFamily: 'Inter, system-ui, sans-serif',
                                     }}>
 
                                         {/* ── Fila 1: Avatar + Título + Acciones ─────────────────── */}
-                                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 12 }}>
+                                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 10 }}>
 
                                             {/* Avatar corporativo */}
+                                            {/* Avatar — con imagen del libro o gradiente */}
                                             <div style={{
-                                                width: 44, height: 44, borderRadius: 10, flexShrink: 0,
-                                                background: `linear-gradient(135deg, ${NAVY}, #005577)`,
+                                                width: 36, height: 36, borderRadius: 8, flexShrink: 0,
+                                                background: video.bookImage
+                                                    ? `url(${video.bookImage})`
+                                                    : `linear-gradient(135deg, ${NAVY}, #005577)`,
+                                                backgroundSize: 'cover',
+                                                backgroundPosition: 'center',
                                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                                color: 'white', fontWeight: 800, fontSize: 20,
+                                                color: 'white', fontWeight: 800, fontSize: 16,
                                                 boxShadow: '0 2px 8px rgba(0,51,73,0.25)',
                                                 border: `2px solid ${accentColor === '#e2e8f0' ? 'rgba(0,51,73,0.15)' : accentColor}`,
+                                                overflow: 'hidden',
                                             }}>
-                                                {initial}
+                                                {!video.bookImage && initial}
                                             </div>
 
                                             {/* Título + metadatos */}
@@ -1904,6 +2080,7 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                             libros={acceptedVideos}
                             selectedTema={selectedPiramidaTema}
                             onSelectTema={setSelectedPiramidaTema}
+                            onUpdateBookTema={handleUpdateBookTema}
                         />
                     </div>
                 )}
@@ -1915,143 +2092,163 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                     </div>
                 )}
 
-                {/* PESTAÑA: AJUSTES DE BASE DE CONOCIMIENTO */}
+                {/* PESTAÑA: AJUSTES DE NIVELES DE LA PIRÁMIDE */}
                 {activeTab === 'config' && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-                        {/* CONFIGURACIÓN DE BASE DE CONOCIMIENTO */}
-                        <div className="card" style={{ background: 'linear-gradient(135deg, #f0f4ff 0%, #ffffff 100%)', borderLeft: '4px solid #003349' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.5rem' }}>
-                                <div>
-                                    <h3 style={{ marginBottom: '0.25rem', color: '#003349' }}>🧠 Base de Conocimiento FORESVI</h3>
-                                    <p style={{ fontSize: '0.9rem', color: '#717B8D', margin: 0 }}>Configura el nombre y descripción de tu sistema de conocimiento</p>
+                        {/* ── Conexión con el servidor (backend) ── */}
+                        <div className="card" style={{ borderLeft: '4px solid #003349' }}>
+                            <h3 style={{ margin: 0, marginBottom: 6, color: '#003349' }}>🔌 Conexión con el servidor (backend)</h3>
+                            <p style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: 16, marginTop: 0 }}>
+                                Solo necesario si usas la app desde <b>otro dispositivo</b> (móvil / iPad) conectándose a tu Mac por un túnel.
+                                Déjalo vacío para usar el servidor local del propio ordenador.
+                            </p>
+                            <div style={{ display: 'grid', gap: 14, maxWidth: 560 }}>
+                                <label style={{ fontSize: 13, fontWeight: 600, color: '#334155', display: 'flex', flexDirection: 'column', gap: 5 }}>
+                                    URL del backend
+                                    <input
+                                        value={apiBaseInput}
+                                        onChange={(e) => setApiBaseInput(e.target.value)}
+                                        placeholder="https://algo.trycloudflare.com"
+                                        style={{ padding: '0.7rem 0.9rem', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: '0.95rem', boxSizing: 'border-box', width: '100%' }}
+                                    />
+                                </label>
+                                <label style={{ fontSize: 13, fontWeight: 600, color: '#334155', display: 'flex', flexDirection: 'column', gap: 5 }}>
+                                    Token de seguridad (opcional)
+                                    <input
+                                        value={apiTokenInput}
+                                        onChange={(e) => setApiTokenInput(e.target.value)}
+                                        type="password"
+                                        placeholder="pega aquí el token que exige el servidor"
+                                        style={{ padding: '0.7rem 0.9rem', borderRadius: 8, border: '1px solid #cbd5e1', fontSize: '0.95rem', boxSizing: 'border-box', width: '100%' }}
+                                    />
+                                </label>
+                                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                                    <button onClick={handleSaveApiConfig} className="btn btn-primary" style={{ padding: '0.6rem 1.2rem' }}>💾 Guardar y recargar</button>
+                                    <button onClick={() => { setApiBaseInput(''); setApiTokenInput(''); }} className="btn btn-outline" style={{ padding: '0.6rem 1.2rem' }}>Vaciar (usar local)</button>
+                                    {apiSaveMsg && <span style={{ color: '#16a34a', fontSize: 13, fontWeight: 600 }}>{apiSaveMsg}</span>}
                                 </div>
-                                <button
-                                    onClick={() => setKnowledgeBaseEditing(!knowledgeBaseEditing)}
+                                <div style={{ fontSize: 12, color: '#94a3b8' }}>
+                                    Actual: <code style={{ background: '#f1f5f9', padding: '2px 6px', borderRadius: 4 }}>{getApiBase() || '(servidor local)'}</code>
+                                </div>
+                            </div>
+                        </div>
+
+                        <h2 style={{ color: '#003349', marginBottom: '1rem' }}>⚙️ Configurar Niveles de la Pirámide de Conocimiento</h2>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: '1.5rem' }}>
+                            {PIRAMIDE_TEMAS.map((tema) => (
+                                <div
+                                    key={tema.nivel}
+                                    className="card"
                                     style={{
-                                        padding: '0.5rem 1rem',
-                                        background: knowledgeBaseEditing ? '#E25454' : '#003349',
-                                        color: 'white',
-                                        border: 'none',
-                                        borderRadius: '8px',
-                                        fontWeight: 600,
-                                        fontSize: '0.9rem',
-                                        cursor: 'pointer',
-                                        transition: 'all 0.2s'
+                                        background: 'white',
+                                        borderLeft: '4px solid #E25454'
                                     }}
                                 >
-                                    {knowledgeBaseEditing ? '❌ Cancelar' : '✏️ Editar'}
-                                </button>
-                            </div>
-
-                            {knowledgeBaseEditing ? (
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                                    {/* Nombre */}
-                                    <div>
-                                        <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.5rem', color: '#003349' }}>
-                                            📌 Nombre de la Base de Conocimiento
-                                        </label>
-                                        <input
-                                            type="text"
-                                            value={knowledgeBaseName}
-                                            onChange={(e) => { setKnowledgeBaseName(e.target.value); setKnowledgeBaseChanged(true); }}
-                                            style={{ width: '100%', padding: '0.75rem', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '1rem', boxSizing: 'border-box' }}
-                                        />
-                                    </div>
-
-                                    {/* Descripción */}
-                                    <div>
-                                        <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.5rem', color: '#003349' }}>
-                                            📝 Descripción
-                                        </label>
-                                        <textarea
-                                            value={knowledgeBaseDescription}
-                                            onChange={(e) => { setKnowledgeBaseDescription(e.target.value); setKnowledgeBaseChanged(true); }}
-                                            style={{ width: '100%', padding: '0.75rem', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '1rem', minHeight: '100px', boxSizing: 'border-box', fontFamily: 'inherit' }}
-                                            placeholder="Describe el propósito y alcance de tu base de conocimiento..."
-                                        />
-                                    </div>
-
-                                    {/* Botón Guardar */}
-                                    {knowledgeBaseChanged && (
-                                        <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
-                                            <button
-                                                onClick={() => {
-                                                    // Guardar cambios (simplemente actualizamos el estado)
-                                                    setKnowledgeBaseEditing(false);
-                                                    setKnowledgeBaseChanged(false);
-                                                    alert('✅ Cambios guardados correctamente');
-                                                }}
-                                                style={{
-                                                    padding: '0.6rem 1.5rem',
-                                                    background: '#16a34a',
-                                                    color: 'white',
-                                                    border: 'none',
-                                                    borderRadius: '8px',
-                                                    fontWeight: 600,
-                                                    cursor: 'pointer',
-                                                    flex: 1
-                                                }}
-                                            >
-                                                💾 Guardar Cambios
-                                            </button>
+                                    {/* Encabezado del nivel */}
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem' }}>
+                                        <div style={{
+                                            width: '36px',
+                                            height: '36px',
+                                            borderRadius: '8px',
+                                            background: '#003349',
+                                            color: 'white',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            fontSize: '0.85rem',
+                                            fontWeight: 800
+                                        }}>
+                                            {tema.nivel}
                                         </div>
-                                    )}
-                                </div>
-                            ) : (
-                                <div style={{
-                                    background: 'white',
-                                    padding: '1rem',
-                                    borderRadius: '8px',
-                                    border: '1px solid #cbd5e1'
-                                }}>
-                                    <div style={{ marginBottom: '1rem' }}>
-                                        <p style={{ fontSize: '0.8rem', color: '#717B8D', margin: '0 0 0.25rem 0' }}>Nombre</p>
-                                        <p style={{ fontSize: '1rem', fontWeight: 600, color: '#003349', margin: 0 }}>{knowledgeBaseName}</p>
+                                        <div style={{ flex: 1 }}>
+                                            <h4 style={{ margin: 0, color: '#003349', fontWeight: 700 }}>
+                                                {tema.nombre}
+                                            </h4>
+                                            <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.8rem', color: '#717B8D' }}>
+                                                {librosPorTema[tema.nivel]?.length || 0} {(librosPorTema[tema.nivel]?.length || 0) === 1 ? 'libro' : 'libros'}
+                                            </p>
+                                        </div>
                                     </div>
-                                    <div>
-                                        <p style={{ fontSize: '0.8rem', color: '#717B8D', margin: '0 0 0.25rem 0' }}>Descripción</p>
-                                        <p style={{ fontSize: '0.95rem', color: '#475569', margin: 0, lineHeight: '1.5' }}>{knowledgeBaseDescription}</p>
+
+                                    {/* Descripción actual */}
+                                    <div style={{
+                                        padding: '0.75rem',
+                                        background: '#f8fafc',
+                                        borderRadius: '8px',
+                                        marginBottom: '1rem'
+                                    }}>
+                                        <p style={{ margin: 0, fontSize: '0.9rem', color: '#475569', lineHeight: '1.4' }}>
+                                            {tema.descripcion}
+                                        </p>
                                     </div>
+
+                                    {/* Botón editar */}
+                                    <button
+                                        onClick={() => {
+                                            const newDesc = prompt(`Edita la descripción para "${tema.nombre}":`, tema.descripcion);
+                                            if (newDesc !== null) {
+                                                handleUpdateThemeDescription(tema, newDesc);
+                                            }
+                                        }}
+                                        style={{
+                                            width: '100%',
+                                            padding: '0.6rem',
+                                            background: '#f0f4ff',
+                                            color: '#003349',
+                                            border: '1px solid #cbd5e1',
+                                            borderRadius: '6px',
+                                            fontWeight: 600,
+                                            cursor: 'pointer',
+                                            fontSize: '0.9rem',
+                                            transition: 'all 0.2s'
+                                        }}
+                                        onMouseEnter={(e) => {
+                                            e.currentTarget.style.background = '#e0ebff';
+                                            e.currentTarget.style.borderColor = '#003349';
+                                        }}
+                                        onMouseLeave={(e) => {
+                                            e.currentTarget.style.background = '#f0f4ff';
+                                            e.currentTarget.style.borderColor = '#cbd5e1';
+                                        }}
+                                    >
+                                        ✏️ Editar Descripción
+                                    </button>
                                 </div>
-                            )}
+                            ))}
                         </div>
 
-                        {/* INFO SOBRE ASIGNACIÓN DE TEMAS */}
+                        {/* INFORMACIÓN Y ESTADÍSTICAS */}
                         <div className="card" style={{ background: '#f0fdf4', borderLeft: '4px solid #16a34a' }}>
-                            <h3 style={{ marginBottom: '1rem', color: '#166534' }}>ℹ️ Información sobre Temas de Pirámide</h3>
-                            <div style={{ fontSize: '0.95rem', color: '#166534', lineHeight: '1.6' }}>
-                                <p style={{ margin: '0 0 0.75rem 0' }}>
-                                    <strong>Todos los libros deben tener asignado un tema de la pirámide de conocimiento.</strong>
-                                </p>
-                                <p style={{ margin: '0 0 0.75rem 0' }}>
-                                    ✓ <strong>Valor por defecto:</strong> "1. Destino" (Nivel básico)
-                                </p>
-                                <p style={{ margin: '0 0 0.75rem 0' }}>
-                                    ✓ <strong>Cómo cambiar:</strong> Ve al Archivo (📁), edita un libro y selecciona el "Tema de Pirámide"
-                                </p>
-                                <p style={{ margin: 0 }}>
-                                    ✓ <strong>Hashtags:</strong> Se generan automáticamente según el tema y contenido del libro
-                                </p>
-                            </div>
-                        </div>
-
-                        {/* ESTADÍSTICAS */}
-                        <div className="card">
-                            <h3 style={{ marginBottom: '1.5rem' }}>📊 Estadísticas de la Base de Conocimiento</h3>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
-                                <div style={{ background: '#f0f4ff', padding: '1rem', borderRadius: '8px', border: '1px solid #cbd5e1' }}>
-                                    <p style={{ fontSize: '0.85rem', color: '#717B8D', margin: 0 }}>Total de Libros</p>
-                                    <p style={{ fontSize: '1.8rem', fontWeight: 800, color: '#003349', margin: '0.5rem 0 0 0' }}>{acceptedVideos.length}</p>
+                            <h3 style={{ marginBottom: '1rem', color: '#166534' }}>ℹ️ Estado de la Base de Conocimiento</h3>
+                            <div style={{
+                                display: 'grid',
+                                gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                                gap: '1rem',
+                                marginBottom: '1.5rem'
+                            }}>
+                                <div style={{ background: 'white', padding: '1rem', borderRadius: '8px', border: '1px solid #86efac' }}>
+                                    <p style={{ fontSize: '0.85rem', color: '#166534', margin: 0, fontWeight: 600 }}>Total Libros</p>
+                                    <p style={{ fontSize: '1.6rem', fontWeight: 800, color: '#16a34a', margin: '0.5rem 0 0 0' }}>
+                                        {acceptedVideos.length}
+                                    </p>
                                 </div>
-                                <div style={{ background: '#fef2f2', padding: '1rem', borderRadius: '8px', border: '1px solid #fca5a5' }}>
-                                    <p style={{ fontSize: '0.85rem', color: '#991b1b', margin: 0 }}>Con Tema Asignado</p>
-                                    <p style={{ fontSize: '1.8rem', fontWeight: 800, color: '#E25454', margin: '0.5rem 0 0 0' }}>{acceptedVideos.filter(v => v.tema_piramide).length}</p>
+                                <div style={{ background: 'white', padding: '1rem', borderRadius: '8px', border: '1px solid #86efac' }}>
+                                    <p style={{ fontSize: '0.85rem', color: '#166534', margin: 0, fontWeight: 600 }}>Asignados</p>
+                                    <p style={{ fontSize: '1.6rem', fontWeight: 800, color: '#16a34a', margin: '0.5rem 0 0 0' }}>
+                                        {acceptedVideos.filter(v => v.tema_piramide).length}
+                                    </p>
                                 </div>
-                                <div style={{ background: '#f0fdf4', padding: '1rem', borderRadius: '8px', border: '1px solid #86efac' }}>
-                                    <p style={{ fontSize: '0.85rem', color: '#166534', margin: 0 }}>Con Hashtags</p>
-                                    <p style={{ fontSize: '1.8rem', fontWeight: 800, color: '#16a34a', margin: '0.5rem 0 0 0' }}>{acceptedVideos.filter(v => v.hashtags?.length > 0).length}</p>
+                                <div style={{ background: 'white', padding: '1rem', borderRadius: '8px', border: '1px solid #fca5a5' }}>
+                                    <p style={{ fontSize: '0.85rem', color: '#991b1b', margin: 0, fontWeight: 600 }}>Pendientes</p>
+                                    <p style={{ fontSize: '1.6rem', fontWeight: 800, color: '#dc2626', margin: '0.5rem 0 0 0' }}>
+                                        {acceptedVideos.filter(v => !v.tema_piramide).length}
+                                    </p>
                                 </div>
                             </div>
+                            <p style={{ margin: 0, fontSize: '0.9rem', color: '#166534', lineHeight: '1.6' }}>
+                                Los libros sin asignar aparecerán en la sección <strong>"📭 Pendiente de Asignar"</strong> en la Base de Conocimiento, donde podrás asignarles un tema rápidamente.
+                            </p>
                         </div>
                     </div>
                 )}
@@ -2095,11 +2292,243 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                                                 ↙ Seguir buscando
                                             </button>
                                         )}
-                                        <button onClick={() => { setSelectedVideo(null); resetProcessing(); }} style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none', borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer', fontSize: '16px' }}>×</button>
+                                        <button onClick={async () => {
+                                            // Guardar título si ha cambiado antes de cerrar
+                                            if (bookTitleBeingEdited && bookTitleBeingEdited !== selectedVideo.title) {
+                                                await handleSaveBookTitle(selectedVideo.id, bookTitleBeingEdited);
+                                            }
+                                            setSelectedVideo(null);
+                                            resetProcessing();
+                                            setBookTitleBeingEdited('');
+                                            setBookTitleSaveStatus('idle');
+                                        }} style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: 'none', borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer', fontSize: '16px' }}>×</button>
                                     </div>
                                 </div>
 
                                 <div className="p-6 overflow-y-auto flex-1">
+                                    {/* BOOK HEADER - Imagen + Nombre + Info */}
+                                    <div style={{ marginBottom: '2rem', paddingBottom: '1.5rem', borderBottom: '3px solid #e2e8f0' }}>
+                                        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '180px 1fr', gap: isMobile ? '1.25rem' : '2rem', alignItems: 'start', justifyItems: isMobile ? 'center' : 'stretch' }}>
+                                            {/* Imagen Grande */}
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                                                <div style={{
+                                                    width: isMobile ? '150px' : '180px',
+                                                    height: isMobile ? '200px' : '240px',
+                                                    borderRadius: '12px',
+                                                    background: selectedVideo?.bookImage
+                                                        ? `url(${selectedVideo.bookImage})`
+                                                        : 'linear-gradient(135deg, #003349, #005577)',
+                                                    backgroundSize: 'cover',
+                                                    backgroundPosition: 'center',
+                                                    border: '4px solid #003349',
+                                                    boxShadow: '0 8px 24px rgba(0, 51, 73, 0.2)',
+                                                    overflow: 'hidden'
+                                                }} />
+
+                                                {/* Quick buttons para imagen */}
+                                                <div style={{ display: 'flex', gap: '0.5rem', fontSize: '0.75rem', flexWrap: 'wrap' }}>
+                                                    {/* Abrir Google para buscar */}
+                                                    <button
+                                                        onClick={() => {
+                                                            const searchQuery = encodeURIComponent(`${selectedVideo.title} portada libro`);
+                                                            window.open(`https://www.google.com/search?q=${searchQuery}&tbm=isch`, '_blank');
+                                                        }}
+                                                        style={{
+                                                            flex: 1,
+                                                            minWidth: '80px',
+                                                            padding: '0.4rem',
+                                                            background: '#ea4335',
+                                                            color: 'white',
+                                                            border: 'none',
+                                                            borderRadius: '6px',
+                                                            cursor: 'pointer',
+                                                            fontWeight: 600
+                                                        }}
+                                                        onMouseEnter={(e) => e.currentTarget.style.background = '#d33f27'}
+                                                        onMouseLeave={(e) => e.currentTarget.style.background = '#ea4335'}
+                                                        title="Abre Google Imágenes en una nueva pestaña"
+                                                    >
+                                                        🔍 Google
+                                                    </button>
+
+                                                    {/* Pegar URL */}
+                                                    <button
+                                                        onClick={() => {
+                                                            const url = prompt('Pega la URL de la imagen:');
+                                                            if (url && url.trim()) {
+                                                                updateDoc(doc(db, "books", selectedVideo.id), {
+                                                                    bookImage: url.trim()
+                                                                }).then(() => {
+                                                                    alert('✅ Imagen actualizada');
+                                                                }).catch(() => {
+                                                                    alert('❌ Error al guardar');
+                                                                });
+                                                            }
+                                                        }}
+                                                        style={{
+                                                            flex: 1,
+                                                            minWidth: '80px',
+                                                            padding: '0.4rem',
+                                                            background: '#8b5cf6',
+                                                            color: 'white',
+                                                            border: 'none',
+                                                            borderRadius: '6px',
+                                                            cursor: 'pointer',
+                                                            fontWeight: 600
+                                                        }}
+                                                        onMouseEnter={(e) => e.currentTarget.style.background = '#7c3aed'}
+                                                        onMouseLeave={(e) => e.currentTarget.style.background = '#8b5cf6'}
+                                                        title="Pega una URL de imagen"
+                                                    >
+                                                        🔗 URL
+                                                    </button>
+
+                                                    {/* Subir local */}
+                                                    <label style={{
+                                                        flex: 1,
+                                                        minWidth: '80px',
+                                                        padding: '0.4rem',
+                                                        background: '#10b981',
+                                                        color: 'white',
+                                                        border: 'none',
+                                                        borderRadius: '6px',
+                                                        cursor: 'pointer',
+                                                        fontWeight: 600,
+                                                        textAlign: 'center',
+                                                        display: 'block'
+                                                    }}
+                                                    onMouseEnter={(e) => e.currentTarget.style.background = '#059669'}
+                                                    onMouseLeave={(e) => e.currentTarget.style.background = '#10b981'}
+                                                    title="Sube un archivo local"
+                                                    >
+                                                        📤 Subir
+                                                        <input
+                                                            type="file"
+                                                            accept="image/*"
+                                                            style={{ display: 'none' }}
+                                                            onChange={async (e) => {
+                                                                const file = e.target.files?.[0];
+                                                                if (file) {
+                                                                    try {
+                                                                        const reader = new FileReader();
+                                                                        reader.onload = async (event) => {
+                                                                            const imageData = event.target?.result;
+                                                                            if (imageData) {
+                                                                                await updateDoc(doc(db, "books", selectedVideo.id), {
+                                                                                    bookImage: imageData
+                                                                                });
+                                                                                alert('✅ Imagen subida');
+                                                                            }
+                                                                        };
+                                                                        reader.readAsDataURL(file);
+                                                                    } catch (error) {
+                                                                        alert('❌ Error');
+                                                                    }
+                                                                }
+                                                            }}
+                                                        />
+                                                    </label>
+                                                </div>
+                                            </div>
+
+                                            {/* Información + Nombre editable */}
+                                            <div>
+                                                <div style={{ marginBottom: '1rem' }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                                                        <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', color: '#475569' }}>
+                                                            📖 Nombre del Libro
+                                                        </label>
+                                                        {/* Status indicator */}
+                                                        {bookTitleSaveStatus === 'saving' && (
+                                                            <span style={{ fontSize: '0.7rem', color: '#f59e0b', fontWeight: 600 }}>⏳ Guardando...</span>
+                                                        )}
+                                                        {bookTitleSaveStatus === 'saved' && (
+                                                            <span style={{ fontSize: '0.7rem', color: '#16a34a', fontWeight: 600 }}>✅ Guardado</span>
+                                                        )}
+                                                    </div>
+                                                    <input
+                                                        type="text"
+                                                        value={bookTitleBeingEdited || selectedVideo.title || ''}
+                                                        onChange={(e) => {
+                                                            // Update local state immediately
+                                                            setBookTitleBeingEdited(e.target.value);
+                                                            setSelectedVideo({ ...selectedVideo, title: e.target.value });
+                                                            // Auto-save con debounce
+                                                            handleBookTitleChange(selectedVideo.id, e.target.value);
+                                                        }}
+                                                        onBlur={(e) => {
+                                                            e.currentTarget.style.borderColor = '#cbd5e1';
+                                                            // Guardar inmediatamente si hay cambios sin guardarse
+                                                            if (e.target.value && e.target.value !== selectedVideo.title && bookTitleSaveStatus === 'idle') {
+                                                                handleSaveBookTitle(selectedVideo.id, e.target.value);
+                                                            }
+                                                        }}
+                                                        placeholder="Nombre del libro..."
+                                                        style={{
+                                                            width: '100%',
+                                                            padding: '0.75rem',
+                                                            fontSize: '1.1rem',
+                                                            fontWeight: 600,
+                                                            border: '2px solid #cbd5e1',
+                                                            borderRadius: '8px',
+                                                            fontFamily: 'inherit',
+                                                            color: '#003349',
+                                                            transition: 'border-color 0.2s'
+                                                        }}
+                                                        onFocus={(e) => e.currentTarget.style.borderColor = '#3b82f6'}
+                                                    />
+                                                </div>
+
+                                                {/* Info Cards */}
+                                                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '1rem' }}>
+                                                    {/* Status */}
+                                                    <div style={{
+                                                        padding: '1rem',
+                                                        background: orchestrationStatus === 'completed' ? '#f0fdf4' : '#f8fafc',
+                                                        borderRadius: '8px',
+                                                        border: `1px solid ${orchestrationStatus === 'completed' ? '#bbf7d0' : '#e2e8f0'}`
+                                                    }}>
+                                                        <p style={{ margin: '0 0 0.25rem 0', fontSize: '0.8rem', color: '#666', fontWeight: 500 }}>Estado</p>
+                                                        <p style={{ margin: 0, fontSize: '0.95rem', fontWeight: 700, color: orchestrationStatus === 'completed' ? '#16a34a' : '#059669' }}>
+                                                            {orchestrationStatus === 'completed' ? '✅ Completado' :
+                                                             orchestrationStatus === 'idle' ? '○ Pendiente' :
+                                                             '⚙️ Generando'}
+                                                        </p>
+                                                    </div>
+
+                                                    {/* Tema Pirámide */}
+                                                    <div style={{
+                                                        padding: '1rem',
+                                                        background: '#f5f3ff',
+                                                        borderRadius: '8px',
+                                                        border: '1px solid #e9d5ff'
+                                                    }}>
+                                                        <p style={{ margin: '0 0 0.25rem 0', fontSize: '0.8rem', color: '#666', fontWeight: 500 }}>Tema Pirámide</p>
+                                                        <p style={{ margin: 0, fontSize: '0.95rem', fontWeight: 700, color: '#a855f7' }}>
+                                                            {selectedVideo.tema_piramide ? PIRAMIDE_TEMAS.find(t => t.nivel == selectedVideo.tema_piramide)?.nombre || 'Sin asignar' : '—'}
+                                                        </p>
+                                                    </div>
+                                                </div>
+
+                                                {/* Notebook ID */}
+                                                {selectedVideo.notebookId && (
+                                                    <div style={{
+                                                        marginTop: '1rem',
+                                                        padding: '0.75rem',
+                                                        background: '#f0f6f8',
+                                                        borderRadius: '8px',
+                                                        border: '1px solid #d1e7f0'
+                                                    }}>
+                                                        <p style={{ margin: '0 0 0.25rem 0', fontSize: '0.75rem', color: '#666', fontWeight: 500 }}>Notebook ID</p>
+                                                        <p style={{ margin: 0, fontSize: '0.8rem', fontFamily: 'monospace', color: '#003349', wordBreak: 'break-all' }}>
+                                                            {selectedVideo.notebookId}
+                                                        </p>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+
                                     <h3 className="text-xl font-semibold text-gray-800 mb-6">{editingVideoIdx >= 0 ? 'Editar Libro' : 'Sincronización Inteligente'}</h3>
                                     {
                                         searchMode === 'notebooklm' || selectedVideo.isNotebook ? (
@@ -2116,6 +2545,18 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                                                 artifactDownloads={selectedVideo.artifactDownloads}
                                                 uploadedFiles={uploadedFiles}
                                                 setUploadedFiles={setUploadedFiles}
+                                                customPrompts={selectedVideo.customPrompts || {}}
+                                                setCustomPrompts={async (prompts) => {
+                                                    try {
+                                                        await updateDoc(doc(db, "books", selectedVideo.id), {
+                                                            customPrompts: prompts
+                                                        });
+                                                        console.log('✅ Prompts personalizados guardados');
+                                                    } catch (error) {
+                                                        console.error('Error guardando prompts:', error);
+                                                    }
+                                                }}
+                                                bookId={selectedVideo.id}
                                             /></>
                                         ) : (
                                             <div style={{ padding: '1rem', background: '#f8fafc', borderRadius: '8px', marginBottom: '1.5rem', border: '1px solid #e2e8f0' }}>
@@ -2124,43 +2565,174 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                                         )
                                     }
 
+                                    {/* BOOK IMAGE SECTION */}
+                                    <div style={{ marginTop: '1.5rem', padding: '1.5rem', background: '#f5f3ff', borderRadius: '12px', border: '2px solid #a78bfa' }}>
+                                        <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '1rem', color: '#5b21b6' }}>📚 Imagen del Libro</label>
+
+                                        {/* Previsualización */}
+                                        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '120px 1fr', gap: isMobile ? '1rem' : '1.5rem', marginBottom: '1rem', justifyItems: isMobile ? 'center' : 'stretch' }}>
+                                            <div style={{
+                                                width: '120px',
+                                                height: '160px',
+                                                borderRadius: '8px',
+                                                background: selectedVideo?.bookImage
+                                                    ? `url(${selectedVideo.bookImage})`
+                                                    : 'linear-gradient(135deg, #003349, #005577)',
+                                                backgroundSize: 'cover',
+                                                backgroundPosition: 'center',
+                                                border: '3px solid #a78bfa',
+                                                boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
+                                            }} />
+
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                                {selectedVideo?.bookImage ? (
+                                                    <>
+                                                        <p style={{ margin: 0, fontSize: '0.85rem', color: '#333', fontWeight: 500 }}>✅ Imagen cargada</p>
+                                                        <p style={{ margin: 0, fontSize: '0.75rem', color: '#666', wordBreak: 'break-all' }}>
+                                                            {selectedVideo.bookImage.substring(0, 50)}...
+                                                        </p>
+                                                    </>
+                                                ) : (
+                                                    <p style={{ margin: 0, fontSize: '0.85rem', color: '#666', fontStyle: 'italic' }}>Sin imagen (gradiente)</p>
+                                                )}
+
+                                                {/* Botones */}
+                                                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
+                                                    <button
+                                                        onClick={async () => {
+                                                            try {
+                                                                alert('🔍 Buscando imagen en Unsplash...');
+                                                                const imageUrl = await searchBookImage(selectedVideo.title, selectedVideo);
+                                                                if (imageUrl) {
+                                                                    // Manejar fallback a infografía
+                                                                    let urlToSave = imageUrl;
+                                                                    if (imageUrl.startsWith('INFOGRAPHIC:')) {
+                                                                        alert('📊 Usando infografía como portada');
+                                                                        urlToSave = `http://localhost:3001/api/drive-file?path=${encodeURIComponent(imageUrl.replace('INFOGRAPHIC:', ''))}`;
+                                                                    }
+
+                                                                    await updateDoc(doc(db, "books", selectedVideo.id), {
+                                                                        bookImage: urlToSave
+                                                                    });
+                                                                    alert('✅ ¡Imagen encontrada y guardada!');
+                                                                } else {
+                                                                    alert('❌ No encontrada en Unsplash ni en infografías disponibles.');
+                                                                }
+                                                            } catch (error) {
+                                                                console.error('Error buscando imagen:', error);
+                                                                alert('❌ Error al buscar imagen');
+                                                            }
+                                                        }}
+                                                        style={{
+                                                            padding: '0.4rem 0.8rem',
+                                                            background: '#3b82f6',
+                                                            color: 'white',
+                                                            border: 'none',
+                                                            borderRadius: '6px',
+                                                            fontSize: '0.75rem',
+                                                            fontWeight: 600,
+                                                            cursor: 'pointer',
+                                                            whiteSpace: 'nowrap'
+                                                        }}
+                                                        onMouseEnter={(e) => e.currentTarget.style.background = '#2563eb'}
+                                                        onMouseLeave={(e) => e.currentTarget.style.background = '#3b82f6'}
+                                                    >
+                                                        🔍 Buscar
+                                                    </button>
+
+                                                    <label style={{
+                                                        padding: '0.4rem 0.8rem',
+                                                        background: '#10b981',
+                                                        color: 'white',
+                                                        border: 'none',
+                                                        borderRadius: '6px',
+                                                        fontSize: '0.75rem',
+                                                        fontWeight: 600,
+                                                        cursor: 'pointer',
+                                                        whiteSpace: 'nowrap',
+                                                        display: 'inline-block'
+                                                    }}
+                                                    onMouseEnter={(e) => e.currentTarget.style.background = '#059669'}
+                                                    onMouseLeave={(e) => e.currentTarget.style.background = '#10b981'}
+                                                    >
+                                                        📤 Subir
+                                                        <input
+                                                            type="file"
+                                                            accept="image/*"
+                                                            style={{ display: 'none' }}
+                                                            onChange={async (e) => {
+                                                                const file = e.target.files?.[0];
+                                                                if (file) {
+                                                                    try {
+                                                                        alert('📤 Subiendo imagen...');
+                                                                        const reader = new FileReader();
+                                                                        reader.onload = async (event) => {
+                                                                            const imageData = event.target?.result;
+                                                                            if (imageData) {
+                                                                                // Guardar como Data URL
+                                                                                await updateDoc(doc(db, "books", selectedVideo.id), {
+                                                                                    bookImage: imageData
+                                                                                });
+                                                                                alert('✅ ¡Imagen subida correctamente!');
+                                                                            }
+                                                                        };
+                                                                        reader.readAsDataURL(file);
+                                                                    } catch (error) {
+                                                                        console.error('Error subiendo imagen:', error);
+                                                                        alert('❌ Error al subir imagen');
+                                                                    }
+                                                                }
+                                                            }}
+                                                        />
+                                                    </label>
+
+                                                    {selectedVideo?.bookImage && (
+                                                        <button
+                                                            onClick={async () => {
+                                                                if (window.confirm('¿Eliminar la imagen?')) {
+                                                                    try {
+                                                                        await updateDoc(doc(db, "books", selectedVideo.id), {
+                                                                            bookImage: null
+                                                                        });
+                                                                        alert('✅ Imagen eliminada');
+                                                                    } catch (error) {
+                                                                        alert('❌ Error al eliminar imagen');
+                                                                    }
+                                                                }
+                                                            }}
+                                                            style={{
+                                                                padding: '0.4rem 0.8rem',
+                                                                background: '#ef4444',
+                                                                color: 'white',
+                                                                border: 'none',
+                                                                borderRadius: '6px',
+                                                                fontSize: '0.75rem',
+                                                                fontWeight: 600,
+                                                                cursor: 'pointer',
+                                                                whiteSpace: 'nowrap'
+                                                            }}
+                                                            onMouseEnter={(e) => e.currentTarget.style.background = '#dc2626'}
+                                                            onMouseLeave={(e) => e.currentTarget.style.background = '#ef4444'}
+                                                        >
+                                                            🗑 Eliminar
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
                                     {/* COMMON FORM FIELDS */}
-                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginTop: '1.5rem' }}>
-                                        <div>
-                                            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 'bold', marginBottom: '0.3rem', color: '#475569' }}>Categoría</label>
-                                            <select
-                                                value={selectedTopic}
-                                                onChange={(e) => setSelectedTopic(e.target.value)}
-                                                style={{ width: '100%', padding: '0.6rem', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '0.9rem' }}
-                                            >
-                                                <option value="">Seleccionar Categoría...</option>
-                                                {topics.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 'bold', marginBottom: '0.3rem', color: '#475569' }}>Nivel</label>
-                                            <select
-                                                value={selectedLevel}
-                                                onChange={(e) => setSelectedLevel(e.target.value)}
-                                                style={{ width: '100%', padding: '0.6rem', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '0.9rem' }}
-                                            >
-                                                <option>Iniciación</option>
-                                                <option>Intermedio</option>
-                                                <option>Avanzado</option>
-                                                <option>Experto</option>
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 'bold', marginBottom: '0.3rem', color: '#475569' }}>🏛️ Tema de Pirámide</label>
-                                            <select
-                                                value={selectedTemaEdicion}
-                                                onChange={(e) => setSelectedTemaEdicion(e.target.value)}
-                                                style={{ width: '100%', padding: '0.6rem', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '0.9rem' }}
-                                            >
-                                                <option value="">Seleccionar Tema...</option>
-                                                {PIRAMIDE_TEMAS.map(t => <option key={t.nivel} value={t.nivel}>{t.nombre}</option>)}
-                                            </select>
-                                        </div>
+                                    <div style={{ marginTop: '1.5rem' }}>
+                                        <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 'bold', marginBottom: '0.3rem', color: '#475569' }}>🏛️ Tema de Pirámide</label>
+                                        <select
+                                            value={selectedTemaEdicion}
+                                            onChange={(e) => setSelectedTemaEdicion(e.target.value)}
+                                            style={{ width: '100%', padding: '0.6rem', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '0.9rem' }}
+                                        >
+                                            <option value="">Seleccionar Tema...</option>
+                                            {PIRAMIDE_TEMAS.map(t => <option key={t.nivel} value={t.nivel}>{t.nombre}</option>)}
+                                        </select>
                                     </div>
 
                                     {/* HASHTAGS FIELD */}
@@ -2182,6 +2754,100 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                                         />
                                     </div>
 
+                                    {/* ARTIFACT VALIDATION SECTION - Per-artifact approval */}
+                                    {(orchestrationStatus === 'completed' || orchestrationStatus === 'drive_synced') && selectedVideo.artifactDownloads && Object.keys(selectedVideo.artifactDownloads).length > 0 && (
+                                        <div style={{ marginTop: '1.5rem', padding: '1.5rem', background: '#f0f4ff', borderRadius: '12px', border: '2px solid #003349', borderLeft: '6px solid #E25454' }}>
+                                            <h4 style={{ margin: '0 0 1rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#003349', fontWeight: 700 }}>
+                                                ✅ Validación de Contenidos
+                                            </h4>
+
+                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
+                                                {[
+                                                    { key: 'audio', icon: '🎧', label: 'Audio', ext: '.mp3' },
+                                                    { key: 'video', icon: '🎬', label: 'Vídeo', ext: '.mp4' },
+                                                    { key: 'infographic', icon: '🧩', label: 'Infografía', ext: '.png' },
+                                                    { key: 'report', icon: '📄', label: 'Informe', ext: ['.docx', '.md'] },
+                                                    { key: 'presentation', icon: '📊', label: 'Presentación', ext: ['.pdf', '.pptx'] }
+                                                ].map(artifact => {
+                                                    const artifactApprovals = selectedVideo.artifactApprovals || {};
+                                                    const isApproved = artifactApprovals[artifact.key] === true;
+                                                    const downloadedArtifacts = Object.values(selectedVideo.artifactDownloads || {});
+                                                    const hasArtifact = downloadedArtifacts.some(d =>
+                                                        Array.isArray(artifact.ext)
+                                                            ? artifact.ext.some(ext => d.fileName?.endsWith(ext))
+                                                            : d.fileName?.endsWith(artifact.ext)
+                                                    );
+
+                                                    if (!hasArtifact) return null;
+
+                                                    return (
+                                                        <div key={artifact.key} style={{
+                                                            background: 'white',
+                                                            borderRadius: '10px',
+                                                            padding: '1rem',
+                                                            border: isApproved ? '2px solid #16a34a' : '1px solid #cbd5e1',
+                                                            display: 'flex',
+                                                            flexDirection: 'column',
+                                                            gap: '0.75rem',
+                                                            position: 'relative'
+                                                        }}>
+                                                            {isApproved && (
+                                                                <div style={{ position: 'absolute', top: '-12px', right: '10px', background: '#16a34a', color: 'white', borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 800 }}>✓</div>
+                                                            )}
+
+                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                                <span style={{ fontSize: '1.5rem' }}>{artifact.icon}</span>
+                                                                <span style={{ fontWeight: 600, fontSize: '0.95rem', color: '#1e293b', flex: 1 }}>{artifact.label}</span>
+                                                                <span style={{ fontSize: '0.75rem', color: '#94a3b8', background: '#f1f5f9', padding: '0.25rem 0.5rem', borderRadius: '4px' }}>
+                                                                    {isApproved ? '✓ Validado' : '⏳ Pendiente'}
+                                                                </span>
+                                                            </div>
+
+                                                            <button
+                                                                onClick={async () => {
+                                                                    try {
+                                                                        const newApprovals = {
+                                                                            ...(selectedVideo.artifactApprovals || {}),
+                                                                            [artifact.key]: !isApproved
+                                                                        };
+                                                                        await updateDoc(doc(db, "books", selectedVideo.id), {
+                                                                            artifactApprovals: newApprovals
+                                                                        });
+                                                                        console.log(`✅ Aprobación de ${artifact.label} actualizada`);
+                                                                    } catch (error) {
+                                                                        console.error(`Error actualizando aprobación de ${artifact.key}:`, error);
+                                                                        alert('Error al actualizar la aprobación');
+                                                                    }
+                                                                }}
+                                                                style={{
+                                                                    background: isApproved ? '#f0fdf4' : '#fff7ed',
+                                                                    border: `2px solid ${isApproved ? '#16a34a' : '#ea580c'}`,
+                                                                    color: isApproved ? '#16a34a' : '#ea580c',
+                                                                    padding: '0.5rem',
+                                                                    borderRadius: '6px',
+                                                                    fontWeight: 600,
+                                                                    cursor: 'pointer',
+                                                                    fontSize: '0.85rem',
+                                                                    transition: 'all 0.2s'
+                                                                }}
+                                                                onMouseEnter={(e) => {
+                                                                    e.currentTarget.style.transform = 'translateY(-2px)';
+                                                                    e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)';
+                                                                }}
+                                                                onMouseLeave={(e) => {
+                                                                    e.currentTarget.style.transform = 'translateY(0)';
+                                                                    e.currentTarget.style.boxShadow = 'none';
+                                                                }}
+                                                            >
+                                                                {isApproved ? '✓ Validado' : '⏳ Aprobar'}
+                                                            </button>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    )}
+
                                     {/* DRIVE CONTENT VIEWER - For completed books */}
                                     {(orchestrationStatus === 'completed' || orchestrationStatus === 'drive_synced') && selectedVideo.driveFolderPath && (
                                         <div style={{ marginTop: '1.5rem', padding: '1.5rem', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
@@ -2189,7 +2855,7 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                                                 📂 Contenidos Generados en Google Drive
                                             </h4>
 
-                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(280px, 100%), 1fr))', gap: '1rem' }}>
                                                 {/* Audio Player */}
                                                 {(() => {
                                                     const audioFile = Object.values(selectedVideo.artifactDownloads || {}).find(d => d.fileName?.endsWith('.mp3'));
@@ -2352,7 +3018,7 @@ IMPORTANTE: Usa negritas con el formato ** texto ** para resaltar conceptos crí
                 {
                     viewingLogsFor && (
                         <div style={{ position: 'fixed', inset: 0, zIndex: 11000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.85)', padding: '1rem' }}>
-                            <div style={{ background: '#1e1e1e', width: '100%', maxWidth: '800px', height: '600px', borderRadius: '12px', display: 'flex', flexDirection: 'column', overflow: 'hidden', border: '1px solid #333', boxShadow: '0 20px 50px rgba(0,0,0,0.5)' }}>
+                            <div style={{ background: '#1e1e1e', width: '100%', maxWidth: '800px', height: 'min(600px, 85vh)', borderRadius: '12px', display: 'flex', flexDirection: 'column', overflow: 'hidden', border: '1px solid #333', boxShadow: '0 20px 50px rgba(0,0,0,0.5)' }}>
                                 <div style={{ padding: '1rem', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between' }}>
                                     <h3 style={{ margin: 0, color: '#e5e5e5' }}>Log Viewer: {viewingLogsFor.generationJobId}</h3>
                                     <button onClick={() => setViewingLogsFor(null)} style={{ color: 'white', background: 'none', border: 'none', cursor: 'pointer' }}>✖️</button>

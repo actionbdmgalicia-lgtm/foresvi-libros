@@ -29,7 +29,7 @@ const Navbar = () => {
         }}>
             <div className="container" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', height: '64px', maxWidth: '1200px', margin: '0 auto', padding: '0 1.5rem' }}>
                 {/* Logo */}
-                <Link to="/admin" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', textDecoration: 'none' }}>
+                <Link to="/admin" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', textDecoration: 'none', flexShrink: 0 }}>
                     <img src="/logo.png" alt="FORESVI Logo" style={{ height: '36px', width: 'auto' }} />
                     <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.1 }}>
                         <span style={{ fontSize: '0.65rem', color: '#94a3b8', fontWeight: 500, letterSpacing: '0.05em' }}>FORESVI</span>
@@ -39,8 +39,8 @@ const Navbar = () => {
 
                 {/* Right side */}
                 {user && !isLoginPage ? (
-                    <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-                        <span style={{ fontSize: '0.8rem', color: '#64748b' }}>
+                    <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', minWidth: 0 }}>
+                        <span style={{ fontSize: '0.8rem', color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '45vw' }}>
                             Hola, <b style={{ color: '#334155' }}>{user.username}</b>
                         </span>
                         <button
@@ -53,7 +53,8 @@ const Navbar = () => {
                                 background: 'white',
                                 color: '#64748b',
                                 cursor: 'pointer',
-                                transition: 'all 0.2s'
+                                transition: 'all 0.2s',
+                                flexShrink: 0
                             }}
                             onMouseEnter={e => { e.target.style.background = '#f1f5f9'; e.target.style.borderColor = '#cbd5e1'; }}
                             onMouseLeave={e => { e.target.style.background = 'white'; e.target.style.borderColor = '#e2e8f0'; }}

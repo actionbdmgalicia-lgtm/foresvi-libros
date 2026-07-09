@@ -96,12 +96,12 @@ export default function GenerationProgressWidget({ status, message, title, onClo
             <div
                 onClick={() => setCollapsed(false)}
                 style={{
-                    position: 'fixed', bottom: 24, right: 24, zIndex: 9999,
+                    position: 'fixed', bottom: 24, right: 12, zIndex: 9999,
                     background: S.NAVY, color: 'white',
                     borderRadius: 50, padding: '10px 18px',
                     display: 'flex', alignItems: 'center', gap: 12,
                     boxShadow: '0 4px 28px rgba(0,51,73,0.45)',
-                    cursor: 'pointer', minWidth: 290, maxWidth: 380,
+                    cursor: 'pointer', minWidth: 0, maxWidth: 'min(380px, calc(100vw - 24px))',
                     border: '2px solid rgba(255,255,255,0.08)',
                     fontFamily: 'Inter, system-ui, sans-serif',
                     userSelect: 'none',
@@ -131,8 +131,8 @@ export default function GenerationProgressWidget({ status, message, title, onClo
     // ── Vista expandida ───────────────────────────────────────────────────────
     return (
         <div style={{
-            position: 'fixed', bottom: 24, right: 24, zIndex: 9999,
-            background: 'white', borderRadius: 16, width: 370,
+            position: 'fixed', bottom: 24, right: 12, zIndex: 9999,
+            background: 'white', borderRadius: 16, width: 'min(370px, calc(100vw - 24px))',
             boxShadow: '0 8px 48px rgba(0,51,73,0.22)',
             border: `1px solid ${S.BORDER}`, overflow: 'hidden',
             fontFamily: 'Inter, system-ui, sans-serif',
@@ -267,10 +267,11 @@ export default function GenerationProgressWidget({ status, message, title, onClo
 // ── Helpers de estilo ─────────────────────────────────────────────────────────
 function wrapStyle(extra = {}) {
     return {
-        position: 'fixed', bottom: 24, right: 24, zIndex: 9999,
+        position: 'fixed', bottom: 24, right: 12, zIndex: 9999,
         background: 'white', borderRadius: 12,
         padding: '12px 16px', display: 'flex', gap: 10, alignItems: 'center',
-        boxShadow: '0 4px 20px rgba(0,51,73,0.2)', minWidth: 280,
+        boxShadow: '0 4px 20px rgba(0,51,73,0.2)',
+        minWidth: 0, maxWidth: 'calc(100vw - 24px)',
         fontFamily: 'Inter, system-ui, sans-serif',
         ...extra,
     };

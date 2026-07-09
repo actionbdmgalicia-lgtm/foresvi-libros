@@ -1,11 +1,14 @@
 import React, { useState, useRef } from 'react';
+import { getApiBase } from '../utils/api';
 
-const API_BASE = 'http://localhost:3001';
+const API_BASE = getApiBase();
 
-const GenerationConfigPanel = ({ config, setConfig, onLaunch, status, notebookId, message, artifactsStatus, driveFolderPath, driveFolderName, artifactDownloads, onRegenerate, uploadedFiles, setUploadedFiles }) => {
+const GenerationConfigPanel = ({ config, setConfig, onLaunch, status, notebookId, message, artifactsStatus, driveFolderPath, driveFolderName, artifactDownloads, onRegenerate, uploadedFiles, setUploadedFiles, customPrompts = null, setCustomPrompts = null, bookId = null }) => {
     const [activeTab, setActiveTab] = useState('audio');
     const [isUploading, setIsUploading] = useState(false);
     const [dragOver, setDragOver] = useState(false);
+    const [showCustomPrompts, setShowCustomPrompts] = useState(false);
+    const [editingPrompts, setEditingPrompts] = useState(customPrompts || {});
     const fileInputRef = useRef(null);
 
     const handleConfigChange = (type, field, value) => {
@@ -62,7 +65,7 @@ const GenerationConfigPanel = ({ config, setConfig, onLaunch, status, notebookId
         { id: 'audio', label: 'Generación de audio', status: artifactsStatus?.audio === 'completed' || isCompleted ? 'completed' : (artifactsStatus?.audio === 'in_progress' || artifactsStatus?.audio === 'queued') ? 'in_progress' : 'pending' },
         { id: 'infographic', label: 'Generación de infografía', status: artifactsStatus?.infographic === 'completed' || isCompleted ? 'completed' : (artifactsStatus?.infographic === 'in_progress' || artifactsStatus?.infographic === 'queued') ? 'in_progress' : 'pending' },
         { id: 'video', label: 'Generación de vídeo', status: artifactsStatus?.video === 'completed' || isCompleted ? 'completed' : (artifactsStatus?.video === 'in_progress' || artifactsStatus?.video === 'queued') ? 'in_progress' : artifactsStatus?.video === 'failed' ? 'failed' : 'pending' },
-        { id: 'presentation', label: 'Generación de presentación (PPTX)', status: isCompleted ? 'completed' : ['generating_presentation', 'generating_video', 'waiting_artifacts', 'processing_drive'].includes(status) ? 'in_progress' : 'pending' },
+        { id: 'presentation', label: 'Generación de presentación (PDF)', status: isCompleted ? 'completed' : ['generating_presentation', 'generating_video', 'waiting_artifacts', 'processing_drive'].includes(status) ? 'in_progress' : 'pending' },
         { id: 'drive', label: 'Descarga a Google Drive', status: isCompleted ? 'completed' : status === 'processing_drive' ? 'in_progress' : 'pending' },
     ];
 
@@ -74,77 +77,62 @@ const GenerationConfigPanel = ({ config, setConfig, onLaunch, status, notebookId
         const downloadEntries = Object.entries(downloads).filter(([, v]) => v.status === 'downloaded');
 
         return (
-            <div className="space-y-6">
-                {/* Success Header */}
-                <div className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl border border-green-200 p-8 shadow-sm text-center">
-                    <div className="inline-flex items-center justify-center w-20 h-20 bg-green-100 rounded-full mb-4">
-                        <span className="text-4xl">✅</span>
+            <div className="space-y-4">
+                {/* Compact Success Header */}
+                <div className="flex items-center gap-3 p-3 bg-green-50 rounded-lg border border-green-200">
+                    <span className="text-2xl">✅</span>
+                    <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-green-800">Generación Completada</p>
+                        <p className="text-xs text-green-600">Todos los contenidos están listos</p>
                     </div>
-                    <h3 className="text-2xl font-bold text-green-800 mb-2">Generación Completada</h3>
-                    <p className="text-green-600 text-sm mb-4">
-                        Todos los contenidos han sido generados y descargados a Google Drive
-                    </p>
-                    {message && <p className="text-xs text-green-500 font-mono">{message}</p>}
                 </div>
 
-                {/* Links Section */}
-                <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
-                    <h4 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                        📂 Contenidos Generados
-                    </h4>
-
-                    {/* NotebookLM Link */}
+                {/* Compact Status Indicators */}
+                <div className="flex gap-2 flex-wrap">
                     {notebookId && (
                         <a
                             href={`https://notebooklm.google.com/notebook/${notebookId}`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="flex items-center gap-3 p-4 mb-3 bg-gradient-to-r from-orange-50 to-amber-50 rounded-xl border border-orange-200 hover:shadow-md transition-all group"
+                            className="flex items-center gap-2 px-3 py-2 bg-amber-50 rounded-lg border border-amber-200 hover:shadow-sm transition-all text-xs font-medium text-amber-900 hover:bg-amber-100"
                         >
-                            <span className="text-2xl">🧠</span>
-                            <div className="flex-1">
-                                <p className="font-semibold text-gray-900 group-hover:text-orange-700 transition-colors">NotebookLM</p>
-                                <p className="text-xs text-gray-500">Cuaderno interactivo · Chat con IA · Fuentes originales</p>
-                            </div>
-                            <span className="text-orange-400 group-hover:translate-x-1 transition-transform">→</span>
+                            <span>🧠</span> NotebookLM
                         </a>
                     )}
 
-                    {/* Google Drive Folder Link */}
                     {driveFolderName && (
-                        <div className="p-4 mb-3 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-200">
-                            <div className="flex items-center gap-3">
-                                <span className="text-2xl">📁</span>
-                                <div className="flex-1">
-                                    <p className="font-semibold text-gray-900">Google Drive</p>
-                                    <p className="text-xs text-gray-500 font-mono">FORESVI LIBROS / {driveFolderName}</p>
-                                </div>
-                            </div>
+                        <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 rounded-lg border border-blue-200 text-xs font-medium text-blue-900">
+                            <span>📁</span> {driveFolderName}
                         </div>
                     )}
+                </div>
 
-                    {/* Downloaded Files List */}
-                    {downloadEntries.length > 0 && (
-                        <div className="mt-4 space-y-2">
-                            <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Archivos descargados</p>
+                {/* Main: Downloaded Files */}
+                {downloadEntries.length > 0 && (
+                    <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
+                        <h3 className="text-lg font-bold text-gray-900 mb-4">📥 Archivos Descargados</h3>
+                        <div className="space-y-3">
                             {downloadEntries.map(([key, val]) => {
                                 const ext = val.fileName?.split('.').pop()?.toLowerCase() || '';
                                 const icon = ext === 'mp3' ? '🎧' : ext === 'mp4' ? '🎬' : ext === 'png' ? '🧩' : ext === 'docx' ? '📄' : ext === 'pptx' ? '📊' : ext === 'pdf' ? '📑' : '📎';
                                 const sizeMB = val.size ? `${(val.size / 1024 / 1024).toFixed(1)} MB` : '';
                                 return (
-                                    <div key={key} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg border border-gray-100">
-                                        <span className="text-xl">{icon}</span>
+                                    <div key={key} className="flex items-center gap-4 p-4 bg-gradient-to-r from-gray-50 to-white rounded-xl border border-gray-200 hover:border-gray-300 hover:shadow-sm transition-all">
+                                        <span className="text-3xl">{icon}</span>
                                         <div className="flex-1 min-w-0">
-                                            <p className="text-sm font-medium text-gray-800 truncate">{val.fileName}</p>
-                                            <p className="text-xs text-gray-400">{sizeMB}{val.title ? ` · ${val.title}` : ''}</p>
+                                            <p className="font-semibold text-gray-900 truncate">{val.fileName}</p>
+                                            <p className="text-sm text-gray-500 mt-1">{val.title || ''}</p>
+                                            <p className="text-xs text-gray-400 mt-1">{sizeMB}</p>
                                         </div>
-                                        <span className="text-green-500 text-xs font-medium">✓ Descargado</span>
+                                        <div className="flex items-center gap-2 flex-shrink-0">
+                                            <span className="text-green-600 text-xl">✓</span>
+                                        </div>
                                     </div>
                                 );
                             })}
                         </div>
-                    )}
-                </div>
+                    </div>
+                )}
 
                 {/* Regenerate Section */}
                 <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
@@ -176,6 +164,74 @@ const GenerationConfigPanel = ({ config, setConfig, onLaunch, status, notebookId
                             {!config?.audio?.foco && !config?.video?.foco && !config?.infografia?.descripcion && !config?.informe?.foco && (
                                 <p className="text-gray-400 italic">Sin prompts personalizados (se usaron los valores por defecto)</p>
                             )}
+                        </div>
+                    </details>
+
+                    {/* Custom Prompts Editor */}
+                    <details className="mb-4 bg-blue-50 rounded-lg border border-blue-200">
+                        <summary className="px-4 py-3 cursor-pointer text-sm font-medium text-blue-900 hover:bg-blue-100 rounded-lg transition-colors flex items-center gap-2">
+                            ✏️ Editar Prompts Personalizados
+                        </summary>
+                        <div className="px-4 pb-4 pt-2 space-y-3 text-sm">
+                            <div>
+                                <label className="block text-xs font-semibold text-gray-700 mb-1.5">Prompt Audio</label>
+                                <textarea
+                                    value={editingPrompts.audio || config?.audio?.foco || ''}
+                                    onChange={(e) => setEditingPrompts(prev => ({ ...prev, audio: e.target.value }))}
+                                    placeholder="Personaliza el prompt para audio..."
+                                    className="w-full px-2 py-2 rounded border border-gray-300 text-xs font-mono focus:border-blue-400 focus:ring-blue-300 focus:outline-none"
+                                    rows="3"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-semibold text-gray-700 mb-1.5">Prompt Vídeo</label>
+                                <textarea
+                                    value={editingPrompts.video || config?.video?.foco || ''}
+                                    onChange={(e) => setEditingPrompts(prev => ({ ...prev, video: e.target.value }))}
+                                    placeholder="Personaliza el prompt para vídeo..."
+                                    className="w-full px-2 py-2 rounded border border-gray-300 text-xs font-mono focus:border-blue-400 focus:ring-blue-300 focus:outline-none"
+                                    rows="3"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-semibold text-gray-700 mb-1.5">Prompt Infografía</label>
+                                <textarea
+                                    value={editingPrompts.infografia || config?.infografia?.descripcion || ''}
+                                    onChange={(e) => setEditingPrompts(prev => ({ ...prev, infografia: e.target.value }))}
+                                    placeholder="Personaliza el prompt para infografía..."
+                                    className="w-full px-2 py-2 rounded border border-gray-300 text-xs font-mono focus:border-blue-400 focus:ring-blue-300 focus:outline-none"
+                                    rows="3"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-semibold text-gray-700 mb-1.5">Prompt Informe</label>
+                                <textarea
+                                    value={editingPrompts.informe || config?.informe?.foco || ''}
+                                    onChange={(e) => setEditingPrompts(prev => ({ ...prev, informe: e.target.value }))}
+                                    placeholder="Personaliza el prompt para informe..."
+                                    className="w-full px-2 py-2 rounded border border-gray-300 text-xs font-mono focus:border-blue-400 focus:ring-blue-300 focus:outline-none"
+                                    rows="3"
+                                />
+                            </div>
+
+                            <button
+                                onClick={async () => {
+                                    if (setCustomPrompts && bookId) {
+                                        try {
+                                            setCustomPrompts(editingPrompts);
+                                            alert('✅ Prompts guardados localmente. Se usarán en la regeneración.');
+                                        } catch (error) {
+                                            alert('❌ Error al guardar prompts');
+                                        }
+                                    }
+                                }}
+                                className="w-full py-2 rounded-lg font-semibold text-white shadow-md transition-all bg-gradient-to-r from-blue-500 to-blue-600 hover:shadow-lg hover:scale-[1.01] active:scale-[0.99]"
+                            >
+                                💾 Guardar Prompts
+                            </button>
                         </div>
                     </details>
 
@@ -339,20 +395,22 @@ const GenerationConfigPanel = ({ config, setConfig, onLaunch, status, notebookId
                     {activeTab === 'informe' && (
                         <div className="px-4 pb-4 space-y-3 border-t border-gray-100 pt-4">
                             <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-1.5">Tipo</label>
+                                <label className="block text-sm font-medium text-gray-700 mb-1.5">Formato</label>
                                 <select value={config.informe?.tipo || 'Ejecutivo'} onChange={(e) => handleConfigChange('informe', 'tipo', e.target.value)} disabled={isGenerating} className="w-full rounded-lg border-gray-300 shadow-sm focus:border-foresvi-blue focus:ring-foresvi-blue text-sm">
-                                    <option>Ejecutivo</option><option>Detallado</option><option>Bullet Points</option>
+                                    <option value="Ejecutivo">Ejecutivo (Briefing Doc)</option>
+                                    <option value="Estudio">Guía de Estudio (Study Guide)</option>
+                                    <option value="Blog">Blog Post</option>
                                 </select>
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-gray-700 mb-1.5">Idioma</label>
                                 <select value={config.informe?.idioma || 'Español'} onChange={(e) => handleConfigChange('informe', 'idioma', e.target.value)} disabled={isGenerating} className="w-full rounded-lg border-gray-300 shadow-sm focus:border-foresvi-blue focus:ring-foresvi-blue text-sm">
-                                    <option>Español</option><option>Inglés</option><option>Francés</option>
+                                    <option>Español</option><option>Inglés</option><option>Francés</option><option>Alemán</option>
                                 </select>
                             </div>
                             <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-1.5">Foco / Prompt</label>
-                                <textarea value={config.informe?.foco || ''} onChange={(e) => handleConfigChange('informe', 'foco', e.target.value)} disabled={isGenerating} rows={3} className="w-full rounded-lg border-gray-300 shadow-sm focus:border-foresvi-blue focus:ring-foresvi-blue text-sm" placeholder="Opcional: enfoque específico para el informe" />
+                                <label className="block text-sm font-medium text-gray-700 mb-1.5">Foco / Prompt personalizado</label>
+                                <textarea value={config.informe?.foco || ''} onChange={(e) => handleConfigChange('informe', 'foco', e.target.value)} disabled={isGenerating} rows={3} className="w-full rounded-lg border-gray-300 shadow-sm focus:border-foresvi-blue focus:ring-foresvi-blue text-sm" placeholder="Opcional: si escribes aquí un prompt, se usará formato personalizado (Create Your Own)" />
                             </div>
                         </div>
                     )}
@@ -373,27 +431,37 @@ const GenerationConfigPanel = ({ config, setConfig, onLaunch, status, notebookId
                             <div>
                                 <label className="block text-sm font-medium text-gray-700 mb-1.5">Formato</label>
                                 <select value={config.presentacion?.formato || 'Presentación detallada'} onChange={(e) => handleConfigChange('presentacion', 'formato', e.target.value)} disabled={isGenerating} className="w-full rounded-lg border-gray-300 shadow-sm focus:border-foresvi-blue focus:ring-foresvi-blue text-sm">
-                                    <option>Presentación detallada</option><option>Diapositivas del presentador</option>
+                                    <option value="Presentación detallada">Presentación detallada (Detailed Deck)</option>
+                                    <option value="Diapositivas del presentador">Diapositivas del presentador (Presenter Slides)</option>
                                 </select>
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-gray-700 mb-1.5">Idioma</label>
                                 <select value={config.presentacion?.idioma || 'Español'} onChange={(e) => handleConfigChange('presentacion', 'idioma', e.target.value)} disabled={isGenerating} className="w-full rounded-lg border-gray-300 shadow-sm focus:border-foresvi-blue focus:ring-foresvi-blue text-sm">
-                                    <option>Español</option><option>Inglés</option><option>Francés</option>
+                                    <option>Español</option><option>Inglés</option><option>Francés</option><option>Alemán</option>
                                 </select>
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-gray-700 mb-1.5">Duración</label>
                                 <select value={config.presentacion?.duracion || 'Corto'} onChange={(e) => handleConfigChange('presentacion', 'duracion', e.target.value)} disabled={isGenerating} className="w-full rounded-lg border-gray-300 shadow-sm focus:border-foresvi-blue focus:ring-foresvi-blue text-sm">
-                                    <option value="Corto">Corto</option><option value="Medio">Medio</option><option value="Largo">Largo</option>
+                                    <option value="Corto">Corto (short)</option>
+                                    <option value="Predeterminado">Predeterminado (default)</option>
                                 </select>
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-gray-700 mb-1.5">Foco / Prompt</label>
-                                <textarea value={config.presentacion?.foco || ''} onChange={(e) => handleConfigChange('presentacion', 'foco', e.target.value)} disabled={isGenerating} rows={3} className="w-full rounded-lg border-gray-300 shadow-sm focus:border-foresvi-blue focus:ring-foresvi-blue text-sm" placeholder="Opcional: enfoque específico para la presentación" />
+                                <textarea
+                                    value={config.presentacion?.foco || ''}
+                                    onChange={(e) => handleConfigChange('presentacion', 'foco', e.target.value)}
+                                    disabled={isGenerating}
+                                    rows={4}
+                                    className="w-full rounded-lg border-gray-300 shadow-sm focus:border-foresvi-blue focus:ring-foresvi-blue text-sm"
+                                    placeholder="Crea una presentación que resuma las principales ideas del libro para que un dueño o gerente de una PYME pueda aplicar en su entorno laboral. Utiliza ejemplos prácticos e imágenes unidas a los ejemplos del libro..."
+                                />
+                                <p className="text-xs text-gray-400 mt-1">Si dejas vacío, se usará el prompt FORESVI por defecto</p>
                             </div>
-                            <p className="text-xs text-foresvi-gray bg-gray-50 rounded-lg p-2">
-                                Se generará un archivo <strong>.pptx</strong> con diseño corporativo FORESVI y se descargará automáticamente a Google Drive.
+                            <p className="text-xs text-foresvi-gray bg-blue-50 rounded-lg p-2 border border-blue-100">
+                                📊 Generado por NotebookLM Studio (<code className="text-[10px]">slide_deck_create</code>) — descarga automática en PDF
                             </p>
                         </div>
                     )}

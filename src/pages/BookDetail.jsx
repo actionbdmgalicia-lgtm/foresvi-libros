@@ -3,7 +3,8 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { db } from '../firebase';
 import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { useAuth } from '../context/AuthContext';
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+import { getApiBase } from '../utils/api';
+const API_BASE = getApiBase();
 
 // ============================================================================
 // STEPPER COMPONENT: NotebookLM → Drive Sync → YouTube Link → Roadmap Ready

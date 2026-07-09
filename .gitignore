@@ -43,3 +43,9 @@ drive-token.json
 *.mp4
 *.png
 tmp_downloads/
+
+# Uploaded source files (user content — no debe ir al repo)
+uploads/
+
+# Claude local settings
+.claude/settings.local.json
